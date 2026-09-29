@@ -85,5 +85,28 @@ services:
       - ssl_ca_file=/var/lib/postgresql/certs/server.cas
     # No ports published: this database is only reachable through Teleport.
 
+  splunk:
+    image: splunk/splunk:10.4.3
+    # Splunk only ships Intel images; Docker Desktop runs it with Rosetta.
+    platform: linux/amd64
+    container_name: splunk
+    hostname: splunk
+    restart: unless-stopped
+    environment:
+      # Accepts the Splunk General Terms (approved by the lab owner).
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+    # SPLUNK_PASSWORD (admin) lives in a git-ignored file.
+    env_file:
+      - ./secrets/splunk.env
+    volumes:
+      - splunk-etc:/opt/splunk/etc
+      - splunk-var:/opt/splunk/var
+    ports:
+      # Bound to 127.0.0.1 so Splunk Web is only reachable from this Mac.
+      - "127.0.0.1:8000:8000"
+
 volumes:
   pgdata:
+  splunk-etc:
+  splunk-var:
