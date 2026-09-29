@@ -99,6 +99,18 @@ services:
       # Skip the startup chown of /opt/splunk: it retries forever on the
       # read-only app mount. The first boot already set ownership.
       SPLUNK_HOME_OWNERSHIP_ENFORCEMENT: "false"
+    # A recreated container brings back the image's first-run marker (ftr).
+    # With an existing install Splunk then treats startup as an upgrade and
+    # fails its AVX CPU check under Rosetta, looping forever. etc/passwd only
+    # exists after a first successful start, so fresh installs are unaffected.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        if [ -f /opt/splunk/etc/passwd ]; then sudo rm -f /opt/splunk/ftr; fi
+        exec /sbin/entrypoint.sh "$$@"
+      - --
+    command: ["start-service"]
     # SPLUNK_PASSWORD (admin) lives in a git-ignored file.
     env_file:
       - ./secrets/splunk.env
