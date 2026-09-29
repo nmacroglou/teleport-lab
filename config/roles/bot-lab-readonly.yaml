@@ -1,0 +1,15 @@
+# Read-only role for Machine ID bots (tbot).
+# Allows ONLY the lab database as the read-only labreader user.
+# No SSH logins, no apps, no Kubernetes, no admin (resource) rules.
+kind: role
+version: v7
+metadata:
+  name: bot-lab-readonly
+  description: Read-only database access to labdb for lab bots
+spec:
+  allow:
+    db_labels:
+      env: lab
+    db_names: [labdb]
+    db_users: [labreader]
+  deny: {}

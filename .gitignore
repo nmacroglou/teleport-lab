@@ -3,3 +3,9 @@ data/
 
 # Join tokens and other secrets.
 secrets/
+
+# Teleport client binaries (downloaded, checksum-verified).
+bin/
+
+# tbot output certificates (short-lived credentials).
+tbot/out/

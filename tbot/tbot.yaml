@@ -1,0 +1,34 @@
+# tbot (Machine ID) for lab-bot, running on this Mac.
+# Role: bot-lab-readonly (read-only labdb as labreader only).
+version: v2
+proxy_server: localhost:3080
+
+onboarding:
+  join_method: token
+  # Path to the one-time join token (git-ignored).
+  token: /Users/nsuave/teleport-lab/secrets/tbot-join-token
+
+# The bot's own renewable identity (git-ignored via "data/").
+storage:
+  type: directory
+  path: /Users/nsuave/teleport-lab/tbot/data
+
+# Short-lived output certificates.
+credential_ttl: 1h
+renewal_interval: 20m
+
+services:
+  # General Teleport identity (for tsh -i ...).
+  - type: identity
+    destination:
+      type: directory
+      path: /Users/nsuave/teleport-lab/tbot/out/identity
+
+  # Client certificates for the lab database.
+  - type: database
+    service: lab-postgres
+    database: labdb
+    username: labreader
+    destination:
+      type: directory
+      path: /Users/nsuave/teleport-lab/tbot/out/db
