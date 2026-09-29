@@ -22,6 +22,7 @@
 ## To verify
 
 - [ ] Live scene scripts (`demo-scene.sh`, `demo-status.sh`) end to end
+- [ ] Failure exercises F4 to F7 in docs/LAB_RUN_GUIDE.md
 - [ ] Studio dashboards on a projector (fixed canvas)
 - [ ] One allowed and one denied AI action, captured as a screenshot for the runbook
 

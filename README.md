@@ -71,6 +71,8 @@ Seven classic dashboards and six Dashboard Studio dashboards turn the audit log 
 
 See [docs/SPLUNK_DASHBOARDS.md](docs/SPLUNK_DASHBOARDS.md) and the run-of-show in [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md).
 
+Want to see the controls work? [docs/LAB_RUN_GUIDE.md](docs/LAB_RUN_GUIDE.md) shows how to simulate failures safely (bad logins, a denied bot, an AI agent trying to write, an expired credential) and watch them land in Splunk.
+
 > The demo data is **synthetic**, clearly labelled (`demo=true`), and lives in its own index (`teleport_demo`). It is never mixed with real events in `index=teleport`. See [docs/DEMO_DATA.md](docs/DEMO_DATA.md).
 
 ## Repository map
