@@ -47,6 +47,22 @@
           }
         }
       }
+    },
+    "tokens": {
+      "default": {
+        "b_reason": {
+          "value": "*"
+        },
+        "b_event": {
+          "value": "*"
+        },
+        "b_actor": {
+          "value": "*"
+        },
+        "b_uid": {
+          "value": "__none__"
+        }
+      }
     }
   },
   "dataSources": {
@@ -121,15 +137,40 @@
       "type": "ds.chain",
       "options": {
         "extend": "ds_base",
-        "query": "| where outcome=\"denied\" | timechart span=1d count by event"
+        "query": "| where outcome=\"denied\" | stats count as blocked by event | sort - blocked"
       }
     },
-    "t1": {
+    "b1": {
       "type": "ds.chain",
       "options": {
         "extend": "ds_base",
-        "query": "| where outcome=\"denied\" | eval reason=substr(error,1,110) | stats count, latest(_time) as last by actor, actor_class, event, reason | eval last=strftime(last,\"%Y-%m-%d %H:%M\") | sort - count | head 50"
+        "query": "| eval deny_reason=if(outcome=\"denied\", case(like(error,\"%second factor%\"),\"Bad credentials or MFA\", like(error,\"%access to db denied%\"),\"Database access refused by role\", like(error,\"%valid principals%\"),\"SSH login not allowed for this identity\", like(error,\"%token%\"),\"Join token bad or expired\", event=\"kube.request\",\"Kubernetes request forbidden\", true(),\"Other policy denial\"), null())\n| eval control=case(deny_reason=\"Bad credentials or MFA\",\"Authentication and MFA\", deny_reason=\"Database access refused by role\",\"Role-based access control (RBAC)\", deny_reason=\"SSH login not allowed for this identity\",\"Certificate logins (RBAC)\", deny_reason=\"Join token bad or expired\",\"Machine ID join token (short TTL)\", deny_reason=\"Kubernetes request forbidden\",\"Kubernetes access rules (RBAC)\", true(),\"Policy\")\n| eval meaning=case(deny_reason=\"Bad credentials or MFA\",\"The password or second factor was wrong. Teleport refused before granting any access.\", deny_reason=\"Database access refused by role\",\"The identity asked for a database user its role does not allow. Least privilege held.\", deny_reason=\"SSH login not allowed for this identity\",\"The certificate has no permission to log in as that account on that server.\", deny_reason=\"Join token bad or expired\",\"A bot tried to join with an expired or unknown token, so it received no identity at all.\", deny_reason=\"Kubernetes request forbidden\",\"The role does not allow this cluster action in this environment (for example production).\", true(),\"Refused by policy.\")\n| where outcome=\"denied\" | stats count as blocked, dc(actor) as identities, values(actor_class) as classes, latest(_time) as last_seen by deny_reason, event | eval last_seen=strftime(last_seen,\"%Y-%m-%d %H:%M\") | sort - blocked | table deny_reason event blocked identities classes last_seen"
       }
+    },
+    "b2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eval deny_reason=if(outcome=\"denied\", case(like(error,\"%second factor%\"),\"Bad credentials or MFA\", like(error,\"%access to db denied%\"),\"Database access refused by role\", like(error,\"%valid principals%\"),\"SSH login not allowed for this identity\", like(error,\"%token%\"),\"Join token bad or expired\", event=\"kube.request\",\"Kubernetes request forbidden\", true(),\"Other policy denial\"), null())\n| eval control=case(deny_reason=\"Bad credentials or MFA\",\"Authentication and MFA\", deny_reason=\"Database access refused by role\",\"Role-based access control (RBAC)\", deny_reason=\"SSH login not allowed for this identity\",\"Certificate logins (RBAC)\", deny_reason=\"Join token bad or expired\",\"Machine ID join token (short TTL)\", deny_reason=\"Kubernetes request forbidden\",\"Kubernetes access rules (RBAC)\", true(),\"Policy\")\n| eval meaning=case(deny_reason=\"Bad credentials or MFA\",\"The password or second factor was wrong. Teleport refused before granting any access.\", deny_reason=\"Database access refused by role\",\"The identity asked for a database user its role does not allow. Least privilege held.\", deny_reason=\"SSH login not allowed for this identity\",\"The certificate has no permission to log in as that account on that server.\", deny_reason=\"Join token bad or expired\",\"A bot tried to join with an expired or unknown token, so it received no identity at all.\", deny_reason=\"Kubernetes request forbidden\",\"The role does not allow this cluster action in this environment (for example production).\", true(),\"Refused by policy.\")\n| where outcome=\"denied\" | search deny_reason=\"$b_reason$\" event=\"$b_event$\" | stats count as blocked, values(event) as events, values(resource) as resources, latest(_time) as last_seen by actor, actor_class | eval last_seen=strftime(last_seen,\"%Y-%m-%d %H:%M\") | sort - blocked"
+      }
+    },
+    "b3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eval deny_reason=if(outcome=\"denied\", case(like(error,\"%second factor%\"),\"Bad credentials or MFA\", like(error,\"%access to db denied%\"),\"Database access refused by role\", like(error,\"%valid principals%\"),\"SSH login not allowed for this identity\", like(error,\"%token%\"),\"Join token bad or expired\", event=\"kube.request\",\"Kubernetes request forbidden\", true(),\"Other policy denial\"), null())\n| eval control=case(deny_reason=\"Bad credentials or MFA\",\"Authentication and MFA\", deny_reason=\"Database access refused by role\",\"Role-based access control (RBAC)\", deny_reason=\"SSH login not allowed for this identity\",\"Certificate logins (RBAC)\", deny_reason=\"Join token bad or expired\",\"Machine ID join token (short TTL)\", deny_reason=\"Kubernetes request forbidden\",\"Kubernetes access rules (RBAC)\", true(),\"Policy\")\n| eval meaning=case(deny_reason=\"Bad credentials or MFA\",\"The password or second factor was wrong. Teleport refused before granting any access.\", deny_reason=\"Database access refused by role\",\"The identity asked for a database user its role does not allow. Least privilege held.\", deny_reason=\"SSH login not allowed for this identity\",\"The certificate has no permission to log in as that account on that server.\", deny_reason=\"Join token bad or expired\",\"A bot tried to join with an expired or unknown token, so it received no identity at all.\", deny_reason=\"Kubernetes request forbidden\",\"The role does not allow this cluster action in this environment (for example production).\", true(),\"Refused by policy.\")\n| where outcome=\"denied\" | search deny_reason=\"$b_reason$\" event=\"$b_event$\" actor=\"$b_actor$\" | sort - _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table time actor event code resource deny_reason uid | head 100"
+      }
+    },
+    "b4": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit uid=\"$b_uid$\" | eval actor=coalesce(user,'identity.user',user_name) | eval evidence=_raw | table _time actor event code evidence",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "evidence"
     }
   },
   "visualizations": {
@@ -248,7 +289,7 @@
     },
     "v_k5": {
       "type": "splunk.singlevalue",
-      "title": "ACTIONS BLOCKED BY POLICY",
+      "title": "ACTIONS BLOCKED  ·  click to reset",
       "dataSources": {
         "primary": "k5"
       },
@@ -263,7 +304,32 @@
         "sparklineAreaColor": "#F0A030",
         "backgroundColor": "#141B27",
         "majorFontSize": 56
-      }
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_reason",
+                "value": "*"
+              },
+              {
+                "token": "b_event",
+                "value": "*"
+              },
+              {
+                "token": "b_actor",
+                "value": "*"
+              },
+              {
+                "token": "b_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
     },
     "v_k6": {
       "type": "splunk.singlevalue",
@@ -304,7 +370,7 @@
     "v_c3": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "## ③  What policy blocked",
+        "markdown": "## ③  What policy blocked, by action",
         "fontColor": "#E5534B",
         "backgroundColor": "transparent"
       }
@@ -342,39 +408,120 @@
     },
     "v_p3": {
       "type": "splunk.column",
-      "title": "Blocked per day, by event",
+      "title": "Blocked by action  (click a bar to drill in)",
       "dataSources": {
         "primary": "c3"
       },
       "options": {
         "backgroundColor": "#141B27",
-        "stackMode": "stacked",
-        "legendDisplay": "bottom"
-      }
+        "seriesColors": [
+          "#E5534B"
+        ],
+        "legendDisplay": "off"
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_event",
+                "key": "row.event.value"
+              }
+            ]
+          }
+        },
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_reason",
+                "value": "*"
+              },
+              {
+                "token": "b_actor",
+                "value": "*"
+              },
+              {
+                "token": "b_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
     },
     "v_c4": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "## ④  What was blocked, and why",
+        "markdown": "## ④  What was blocked, and by whom: click a row to go deeper",
         "fontColor": "#B07CE8",
         "backgroundColor": "transparent"
       }
     },
     "v_t1": {
       "type": "splunk.table",
-      "title": "Every refusal is attributed to an identity  (open the drill-down page for the full trail)",
+      "title": "Level 1 · What actions were blocked, and why?",
       "dataSources": {
-        "primary": "t1"
+        "primary": "b1"
       },
       "options": {
         "count": 6,
         "backgroundColor": "#141B27",
         "dataOverlayMode": "none",
-        "wrap": true,
         "showRowNumbers": false,
+        "wrap": true
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_reason",
+                "key": "row.deny_reason.value"
+              },
+              {
+                "token": "b_event",
+                "key": "row.event.value"
+              }
+            ]
+          }
+        },
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_actor",
+                "value": "*"
+              },
+              {
+                "token": "b_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_t2": {
+      "type": "splunk.table",
+      "title": "Level 2 · Who was blocked?  (click an identity)",
+      "dataSources": {
+        "primary": "b2"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true,
         "columnFormat": {
           "actor_class": {
-            "rowBackgroundColors": "> table | seriesByName(\"actor_class\") | matchValue(actor_classBgConfig)"
+            "rowBackgroundColors": "> table | seriesByName(\"actor_class\") | matchValue(actor_classBgConfig)",
+            "rowColors": "> table | seriesByName(\"actor_class\") | matchValue(actor_classFgConfig)"
           }
         }
       },
@@ -396,7 +543,90 @@
             "match": "system",
             "value": "#3A4352"
           }
+        ],
+        "actor_classFgConfig": [
+          {
+            "match": "ai_agent",
+            "value": "#FFFFFF"
+          },
+          {
+            "match": "human",
+            "value": "#FFFFFF"
+          },
+          {
+            "match": "workload",
+            "value": "#FFFFFF"
+          },
+          {
+            "match": "system",
+            "value": "#FFFFFF"
+          }
         ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_actor",
+                "key": "row.actor.value"
+              }
+            ]
+          }
+        },
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_t3": {
+      "type": "splunk.table",
+      "title": "Level 3 · The exact events  (click one for the raw evidence)",
+      "dataSources": {
+        "primary": "b3"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "b_uid",
+                "key": "row.uid.value"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_t4": {
+      "type": "splunk.table",
+      "title": "Level 4 · Evidence card: the raw audit event",
+      "dataSources": {
+        "primary": "b4"
+      },
+      "options": {
+        "count": 1,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
       }
     },
     "v_c5": {
@@ -436,7 +666,7 @@
     "type": "absolute",
     "options": {
       "width": 1920,
-      "height": 1440,
+      "height": 2020,
       "display": "auto-scale",
       "backgroundColor": "#0B0F17"
     },
@@ -607,8 +837,38 @@
         "position": {
           "x": 40,
           "y": 842,
+          "w": 909,
+          "h": 340
+        }
+      },
+      {
+        "item": "v_t2",
+        "type": "block",
+        "position": {
+          "x": 971,
+          "y": 842,
+          "w": 909,
+          "h": 340
+        }
+      },
+      {
+        "item": "v_t3",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1204,
           "w": 1840,
           "h": 330
+        }
+      },
+      {
+        "item": "v_t4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1556,
+          "w": 1840,
+          "h": 190
         }
       },
       {
@@ -616,7 +876,7 @@
         "type": "block",
         "position": {
           "x": 40,
-          "y": 1200,
+          "y": 1780,
           "w": 1840,
           "h": 36
         }
@@ -626,7 +886,7 @@
         "type": "block",
         "position": {
           "x": 40,
-          "y": 1242,
+          "y": 1822,
           "w": 598,
           "h": 170
         }
@@ -636,7 +896,7 @@
         "type": "block",
         "position": {
           "x": 660,
-          "y": 1242,
+          "y": 1822,
           "w": 598,
           "h": 170
         }
@@ -646,7 +906,7 @@
         "type": "block",
         "position": {
           "x": 1280,
-          "y": 1242,
+          "y": 1822,
           "w": 598,
           "h": 170
         }
