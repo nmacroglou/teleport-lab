@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent that keeps tbot (lab-bot) running for this user,
+  renewing its short-lived certificates in tbot/out/.
+
+  Install:   cp tbot/dev.teleport-lab.tbot.plist ~/Library/LaunchAgents/
+             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.teleport-lab.tbot.plist
+  Status:    launchctl print gui/$(id -u)/dev.teleport-lab.tbot
+  Stop:      launchctl bootout gui/$(id -u)/dev.teleport-lab.tbot
+  Log:       ~/Library/Logs/teleport-lab-tbot.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.teleport-lab.tbot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nsuave/teleport-lab/bin/tbot</string>
+    <string>start</string>
+    <string>-c</string>
+    <string>/Users/nsuave/teleport-lab/tbot/tbot.yaml</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Wait at least 60s between restarts if tbot exits. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/nsuave/Library/Logs/teleport-lab-tbot.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nsuave/Library/Logs/teleport-lab-tbot.log</string>
+</dict>
+</plist>

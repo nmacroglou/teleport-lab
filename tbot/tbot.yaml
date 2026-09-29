@@ -19,7 +19,10 @@ renewal_interval: 20m
 
 services:
   # General Teleport identity (for tsh -i ...).
+  # allow_reissue lets tsh (e.g. `tsh mcp db start`) request database certs;
+  # they are still limited to the bot-lab-readonly role.
   - type: identity
+    allow_reissue: true
     destination:
       type: directory
       path: /Users/nsuave/teleport-lab/tbot/out/identity

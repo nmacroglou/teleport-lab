@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "teleport-databases": {
+      "command": "/Users/nsuave/teleport-lab/bin/tsh",
+      "args": [
+        "mcp",
+        "db",
+        "start",
+        "teleport://clusters/localhost/databases/lab-postgres?dbName=labdb&dbUser=labreader"
+      ],
+      "env": {
+        "TELEPORT_IDENTITY_FILE": "/Users/nsuave/teleport-lab/tbot/out/identity/identity",
+        "TELEPORT_PROXY": "localhost:3080"
+      }
+    }
+  }
+}
