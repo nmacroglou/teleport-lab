@@ -1,0 +1,949 @@
+<dashboard version="2" theme="dark">
+  <label>Unified Identity Layer (Studio)</label>
+  <description>Identity story: who, what, stopped, why, and how a team runs it</description>
+  <definition><![CDATA[
+{
+  "title": "Unified Identity Layer (Studio)",
+  "description": "Identity classes, who reached what, and a 4-level why-was-it-refused drill-down, plus an operating model.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-15d@d,now"
+      }
+    },
+    "input_src": {
+      "type": "input.dropdown",
+      "title": "Data source",
+      "options": {
+        "token": "src",
+        "defaultValue": "index=teleport_demo",
+        "items": [
+          {
+            "label": "Demo data (synthetic, 15 days)",
+            "value": "index=teleport_demo"
+          },
+          {
+            "label": "Live lab data",
+            "value": "index=teleport"
+          },
+          {
+            "label": "Both",
+            "value": "(index=teleport OR index=teleport_demo)"
+          }
+        ]
+      }
+    },
+    "input_cls": {
+      "type": "input.dropdown",
+      "title": "Identity class",
+      "options": {
+        "token": "cls",
+        "defaultValue": "*",
+        "items": [
+          {
+            "label": "All identities",
+            "value": "*"
+          },
+          {
+            "label": "Humans",
+            "value": "human"
+          },
+          {
+            "label": "AI agents",
+            "value": "ai_agent"
+          },
+          {
+            "label": "Workloads (services, CI)",
+            "value": "workload"
+          },
+          {
+            "label": "Teleport system",
+            "value": "system"
+          }
+        ]
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    },
+    "tokens": {
+      "default": {
+        "d_reason": {
+          "value": "*"
+        },
+        "d_actor": {
+          "value": "*"
+        },
+        "d_uid": {
+          "value": "__none__"
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_base": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit\n| eval actor=coalesce(user, 'identity.user', user_name, \"unknown\")\n| eval actor_type=case(like(actor,\"bot-%\"),\"machine\", actor=\"system\",\"system\", like(actor,\"%.localhost\"),\"system\", true(),\"human\")\n| eval actor_class=case(actor_type=\"human\",\"human\", match(actor,\"^bot-(claude|copilot|lab)\"),\"ai_agent\", actor_type=\"machine\",\"workload\", true(),\"system\")\n| eval outcome=if(success=\"false\" OR like(code,\"%W\"),\"denied\",\"allowed\")\n| eval src=coalesce('addr.remote','identity.client_ip')\n| eval src_ip=replace(src,\":\\d+$$\",\"\")\n| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)\n| eval hour_utc=floor((_time%86400)/3600)\n| eval ttl_h=if(event=\"cert.create\", round((strptime(substr('identity.expires',1,19).\"+0000\",\"%Y-%m-%dT%H:%M:%S%z\")-_time)/3600,2), null())\n| eval is_write=if(event=\"db.session.query\" AND match(db_query,\"(?i)^\\s*(create|drop|alter|insert|update|delete|truncate|grant)\"),1,0)\n| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, \"identity.user\", \"identity.roles{}\", \"identity.expires\", \"identity.client_ip\", \"addr.remote\", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "base"
+    },
+    "ds_f": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search actor_class=\"$cls$\""
+      },
+      "name": "filtered"
+    },
+    "ds_k_total": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eventstats count as total | timechart span=1d count as events, first(total) as total | eventstats max(total) as total"
+      },
+      "name": "k_total"
+    },
+    "ds_k_den": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eventstats count(eval(outcome=\"denied\")) as total | timechart span=1d count(eval(outcome=\"denied\")) as events, first(total) as total | eventstats max(total) as total"
+      },
+      "name": "k_den"
+    },
+    "ds_k_ai": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count(eval(actor_class=\"ai_agent\")) as total | timechart span=1d count(eval(actor_class=\"ai_agent\")) as events, first(total) as total | eventstats max(total) as total"
+      },
+      "name": "k_ai"
+    },
+    "ds_k_mfa": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"user.login\" | eventstats count(eval(isnotnull(mfa_device))) as mm, count as tt | eval total=if(tt>0,round(100*mm/tt,0),0) | timechart span=1d count(eval(isnotnull(mfa_device))) as m, count as t, first(total) as total | eval events=if(t>0,round(100*m/t,0),null()) | eventstats max(total) as total | fields _time events total"
+      },
+      "name": "k_mfa"
+    },
+    "ds_k_ttl": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | eventstats avg(ttl_h) as total | timechart span=1d avg(ttl_h) as events, first(total) as total | eventstats max(total) as total | eval total=round(total,1), events=round(events,1)"
+      },
+      "name": "k_ttl"
+    },
+    "ds_k_ids": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eventstats dc(actor) as total | timechart span=1d dc(actor) as events, first(total) as total | eventstats max(total) as total"
+      },
+      "name": "k_ids"
+    },
+    "ds_sankey": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eval resource=coalesce(resource,\"(no resource)\") | stats count by actor_class resource outcome | eval pair=mvappend(actor_class.\"|\".resource, resource.\"|\".outcome) | mvexpand pair | eval source=mvindex(split(pair,\"|\"),0), target=mvindex(split(pair,\"|\"),1) | stats sum(count) as count by source target | sort - count | head 40"
+      },
+      "name": "sankey"
+    },
+    "ds_donut": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| stats count by actor_class"
+      },
+      "name": "donut"
+    },
+    "ds_time": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| timechart span=1d count by outcome"
+      },
+      "name": "time"
+    },
+    "ds_l1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eval deny_reason=if(outcome=\"denied\", case(like(error,\"%second factor%\"),\"Bad credentials or MFA\", like(error,\"%access to db denied%\"),\"Database access refused by role\", like(error,\"%valid principals%\"),\"SSH login not allowed for this identity\", like(error,\"%token%\"),\"Join token bad or expired\", event=\"kube.request\",\"Kubernetes request forbidden\", true(),\"Other policy denial\"), null())\n| eval control=case(deny_reason=\"Bad credentials or MFA\",\"Authentication and MFA\", deny_reason=\"Database access refused by role\",\"Role-based access control (RBAC)\", deny_reason=\"SSH login not allowed for this identity\",\"Certificate logins (RBAC)\", deny_reason=\"Join token bad or expired\",\"Machine ID join token (short TTL)\", deny_reason=\"Kubernetes request forbidden\",\"Kubernetes access rules (RBAC)\", true(),\"Policy\")\n| eval meaning=case(deny_reason=\"Bad credentials or MFA\",\"The password or second factor was wrong. Teleport refused before granting any access.\", deny_reason=\"Database access refused by role\",\"The identity asked for a database user its role does not allow. Least privilege held.\", deny_reason=\"SSH login not allowed for this identity\",\"The certificate has no permission to log in as that account on that server.\", deny_reason=\"Join token bad or expired\",\"A bot tried to join with an expired or unknown token, so it received no identity at all.\", deny_reason=\"Kubernetes request forbidden\",\"The role does not allow this cluster action in this environment (for example production).\", true(),\"Refused by policy.\")\n| where outcome=\"denied\" | stats count as denials, dc(actor) as identities, values(actor_class) as classes, latest(_time) as last_seen by deny_reason, control, meaning | eval last_seen=strftime(last_seen,\"%Y-%m-%d %H:%M\") | sort - denials | table deny_reason denials identities classes control meaning last_seen"
+      },
+      "name": "l1"
+    },
+    "ds_l2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eval deny_reason=if(outcome=\"denied\", case(like(error,\"%second factor%\"),\"Bad credentials or MFA\", like(error,\"%access to db denied%\"),\"Database access refused by role\", like(error,\"%valid principals%\"),\"SSH login not allowed for this identity\", like(error,\"%token%\"),\"Join token bad or expired\", event=\"kube.request\",\"Kubernetes request forbidden\", true(),\"Other policy denial\"), null())\n| eval control=case(deny_reason=\"Bad credentials or MFA\",\"Authentication and MFA\", deny_reason=\"Database access refused by role\",\"Role-based access control (RBAC)\", deny_reason=\"SSH login not allowed for this identity\",\"Certificate logins (RBAC)\", deny_reason=\"Join token bad or expired\",\"Machine ID join token (short TTL)\", deny_reason=\"Kubernetes request forbidden\",\"Kubernetes access rules (RBAC)\", true(),\"Policy\")\n| eval meaning=case(deny_reason=\"Bad credentials or MFA\",\"The password or second factor was wrong. Teleport refused before granting any access.\", deny_reason=\"Database access refused by role\",\"The identity asked for a database user its role does not allow. Least privilege held.\", deny_reason=\"SSH login not allowed for this identity\",\"The certificate has no permission to log in as that account on that server.\", deny_reason=\"Join token bad or expired\",\"A bot tried to join with an expired or unknown token, so it received no identity at all.\", deny_reason=\"Kubernetes request forbidden\",\"The role does not allow this cluster action in this environment (for example production).\", true(),\"Refused by policy.\")\n| where outcome=\"denied\" | search deny_reason=\"$d_reason$\" | stats count as denials, values(event) as events, values(resource) as resources, latest(_time) as last_seen by actor, actor_class | eval last_seen=strftime(last_seen,\"%Y-%m-%d %H:%M\") | sort - denials"
+      },
+      "name": "l2"
+    },
+    "ds_l3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_f",
+        "query": "| eval deny_reason=if(outcome=\"denied\", case(like(error,\"%second factor%\"),\"Bad credentials or MFA\", like(error,\"%access to db denied%\"),\"Database access refused by role\", like(error,\"%valid principals%\"),\"SSH login not allowed for this identity\", like(error,\"%token%\"),\"Join token bad or expired\", event=\"kube.request\",\"Kubernetes request forbidden\", true(),\"Other policy denial\"), null())\n| eval control=case(deny_reason=\"Bad credentials or MFA\",\"Authentication and MFA\", deny_reason=\"Database access refused by role\",\"Role-based access control (RBAC)\", deny_reason=\"SSH login not allowed for this identity\",\"Certificate logins (RBAC)\", deny_reason=\"Join token bad or expired\",\"Machine ID join token (short TTL)\", deny_reason=\"Kubernetes request forbidden\",\"Kubernetes access rules (RBAC)\", true(),\"Policy\")\n| eval meaning=case(deny_reason=\"Bad credentials or MFA\",\"The password or second factor was wrong. Teleport refused before granting any access.\", deny_reason=\"Database access refused by role\",\"The identity asked for a database user its role does not allow. Least privilege held.\", deny_reason=\"SSH login not allowed for this identity\",\"The certificate has no permission to log in as that account on that server.\", deny_reason=\"Join token bad or expired\",\"A bot tried to join with an expired or unknown token, so it received no identity at all.\", deny_reason=\"Kubernetes request forbidden\",\"The role does not allow this cluster action in this environment (for example production).\", true(),\"Refused by policy.\")\n| where outcome=\"denied\" | search deny_reason=\"$d_reason$\" actor=\"$d_actor$\" | sort - _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M:%S\") | table time actor event code resource deny_reason uid | head 100"
+      },
+      "name": "l3"
+    },
+    "ds_l4": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit uid=\"$d_uid$\" | eval actor=coalesce(user,'identity.user',user_name) | eval evidence=_raw | table _time actor event code evidence",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "l4"
+    }
+  },
+  "visualizations": {
+    "v_bar": {
+      "type": "splunk.rectangle",
+      "options": {
+        "fillColor": "#B07CE8",
+        "strokeColor": "#B07CE8",
+        "rx": 4
+      }
+    },
+    "v_h1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# Identity is the new perimeter: humans, machines and AI agents on one layer",
+        "fontColor": "#FFFFFF",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_h2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "Claude decides what it wants to do  ·  Teleport decides what it is allowed to do  ·  Splunk proves what actually happened",
+        "fontColor": "#9FB3CC",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_k1": {
+      "type": "splunk.singlevalue",
+      "title": "EVENTS SEEN",
+      "dataSources": {
+        "primary": "ds_k_total"
+      },
+      "options": {
+        "majorColor": "#4E9BE0",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#4E9BE0",
+        "sparklineAreaColor": "#4E9BE0",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k2": {
+      "type": "splunk.singlevalue",
+      "title": "DENIED / FAILED  ·  click to reset drill",
+      "dataSources": {
+        "primary": "ds_k_den"
+      },
+      "options": {
+        "majorColor": "#E5534B",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#E5534B",
+        "sparklineAreaColor": "#E5534B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "d_reason",
+                "value": "*"
+              },
+              {
+                "token": "d_actor",
+                "value": "*"
+              },
+              {
+                "token": "d_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_k3": {
+      "type": "splunk.singlevalue",
+      "title": "AI-AGENT ACTIONS",
+      "dataSources": {
+        "primary": "ds_k_ai"
+      },
+      "options": {
+        "majorColor": "#B07CE8",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#B07CE8",
+        "sparklineAreaColor": "#B07CE8",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k4": {
+      "type": "splunk.singlevalue",
+      "title": "LOGINS PROTECTED BY MFA",
+      "dataSources": {
+        "primary": "ds_k_mfa"
+      },
+      "options": {
+        "majorColor": "#3FB68B",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56,
+        "unit": "%"
+      }
+    },
+    "v_k5": {
+      "type": "splunk.singlevalue",
+      "title": "AVG CERTIFICATE LIFETIME (HOURS)",
+      "dataSources": {
+        "primary": "ds_k_ttl"
+      },
+      "options": {
+        "majorColor": "#F0A030",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#F0A030",
+        "sparklineAreaColor": "#F0A030",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k6": {
+      "type": "splunk.singlevalue",
+      "title": "DISTINCT IDENTITIES",
+      "dataSources": {
+        "primary": "ds_k_ids"
+      },
+      "options": {
+        "majorColor": "#3FB6B6",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB6B6",
+        "sparklineAreaColor": "#3FB6B6",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_c1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ①  WHO is acting",
+        "fontColor": "#B07CE8",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_c2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ②  WHAT they reached, and Teleport's verdict",
+        "fontColor": "#3FB6B6",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_c3": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ③  WHAT was stopped",
+        "fontColor": "#E5534B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_donut": {
+      "type": "splunk.pie",
+      "title": "Click a slice to filter the whole page",
+      "dataSources": {
+        "primary": "ds_donut"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "showDonutHole": true,
+        "collapseThreshold": 0,
+        "seriesColors": [
+          "#B07CE8",
+          "#4E9BE0",
+          "#3FB6B6",
+          "#7A8699"
+        ],
+        "labelDisplay": "valuesAndPercentage"
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "cls",
+                "key": "name"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_sankey": {
+      "type": "splunk.sankey",
+      "title": "Identity class  →  resource  →  outcome",
+      "dataSources": {
+        "primary": "ds_sankey"
+      },
+      "options": {
+        "backgroundColor": "#141B27"
+      }
+    },
+    "v_time": {
+      "type": "splunk.column",
+      "title": "Allowed vs denied, per day",
+      "dataSources": {
+        "primary": "ds_time"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "stackMode": "stacked",
+        "seriesColorsByField": {
+          "allowed": "#3FB68B",
+          "denied": "#E5534B"
+        },
+        "legendDisplay": "bottom"
+      }
+    },
+    "v_c4": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ④  WHY it was stopped: click a row at each level, the filters follow you down",
+        "fontColor": "#F0A030",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_guide": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "**Where you are now**   class `$cls$`  ·  why `$d_reason$`  ·  who `$d_actor$`  ·  event `$d_uid$`  \nAn asterisk means all. Level 1 = the reason and the control that refused. Level 2 = which identity. Level 3 = which events. Level 4 = the raw audit evidence."
+      }
+    },
+    "v_l1": {
+      "type": "splunk.table",
+      "title": "Level 1 · Why were requests denied?",
+      "dataSources": {
+        "primary": "ds_l1"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "d_reason",
+                "key": "row.deny_reason.value"
+              }
+            ]
+          }
+        },
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "d_actor",
+                "value": "*"
+              },
+              {
+                "token": "d_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_l2": {
+      "type": "splunk.table",
+      "title": "Level 2 · Who was denied?",
+      "dataSources": {
+        "primary": "ds_l2"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true,
+        "columnFormat": {
+          "actor_class": {
+            "rowBackgroundColors": "> table | seriesByName(\"actor_class\") | matchValue(actor_classBgConfig)",
+            "rowColors": "> table | seriesByName(\"actor_class\") | matchValue(actor_classFgConfig)"
+          }
+        }
+      },
+      "context": {
+        "actor_classBgConfig": [
+          {
+            "match": "ai_agent",
+            "value": "#5B3A8C"
+          },
+          {
+            "match": "human",
+            "value": "#1F4E79"
+          },
+          {
+            "match": "workload",
+            "value": "#1F6B6B"
+          },
+          {
+            "match": "system",
+            "value": "#3A4352"
+          }
+        ],
+        "actor_classFgConfig": [
+          {
+            "match": "ai_agent",
+            "value": "#FFFFFF"
+          },
+          {
+            "match": "human",
+            "value": "#FFFFFF"
+          },
+          {
+            "match": "workload",
+            "value": "#FFFFFF"
+          },
+          {
+            "match": "system",
+            "value": "#FFFFFF"
+          }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "d_actor",
+                "key": "row.actor.value"
+              }
+            ]
+          }
+        },
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "d_uid",
+                "value": "__none__"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_l3": {
+      "type": "splunk.table",
+      "title": "Level 3 · The exact events (click one for the evidence)",
+      "dataSources": {
+        "primary": "ds_l3"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "d_uid",
+                "key": "row.uid.value"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_l4": {
+      "type": "splunk.table",
+      "title": "Level 4 · Evidence card: the raw audit event",
+      "dataSources": {
+        "primary": "ds_l4"
+      },
+      "options": {
+        "count": 1,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_c5": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ⑤  HOW I would run this with a team  (operating model, a proposal)",
+        "fontColor": "#3FB68B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_m1": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### Detect\nSplunk watches every Teleport audit event. Denials, new identities and write attempts are triaged **daily**, with a named owner and a response-time goal."
+      }
+    },
+    "v_m2": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### Decide\nAccess is **policy as code**: roles and bots live in Git, change by pull request, and every change is reviewed. No one gets standing access; agents start read-only."
+      }
+    },
+    "v_m3": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### Prove\nEach denial can be traced to an identity, a role and a raw event in seconds. A **weekly access review** turns that into evidence for auditors and for engineering."
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1920,
+      "height": 2020,
+      "display": "auto-scale",
+      "backgroundColor": "#0B0F17"
+    },
+    "structure": [
+      {
+        "item": "v_bar",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 30,
+          "w": 10,
+          "h": 86
+        }
+      },
+      {
+        "item": "v_h1",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 24,
+          "w": 1700,
+          "h": 56
+        }
+      },
+      {
+        "item": "v_h2",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 82,
+          "w": 1700,
+          "h": 34
+        }
+      },
+      {
+        "item": "v_k1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k2",
+        "type": "block",
+        "position": {
+          "x": 350,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k3",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k4",
+        "type": "block",
+        "position": {
+          "x": 970,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k5",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k6",
+        "type": "block",
+        "position": {
+          "x": 1590,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_c1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 350,
+          "w": 430,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_c2",
+        "type": "block",
+        "position": {
+          "x": 492,
+          "y": 350,
+          "w": 980,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_c3",
+        "type": "block",
+        "position": {
+          "x": 1494,
+          "y": 350,
+          "w": 386,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_donut",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 392,
+          "w": 430,
+          "h": 420
+        }
+      },
+      {
+        "item": "v_sankey",
+        "type": "block",
+        "position": {
+          "x": 492,
+          "y": 392,
+          "w": 980,
+          "h": 420
+        }
+      },
+      {
+        "item": "v_time",
+        "type": "block",
+        "position": {
+          "x": 1494,
+          "y": 392,
+          "w": 386,
+          "h": 420
+        }
+      },
+      {
+        "item": "v_c4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 840,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_guide",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 882,
+          "w": 1840,
+          "h": 80
+        }
+      },
+      {
+        "item": "v_l1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 982,
+          "w": 1840,
+          "h": 230
+        }
+      },
+      {
+        "item": "v_l2",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1232,
+          "w": 700,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_l3",
+        "type": "block",
+        "position": {
+          "x": 762,
+          "y": 1232,
+          "w": 1118,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_l4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1552,
+          "w": 1840,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_c5",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1770,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_m1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1812,
+          "w": 598,
+          "h": 170
+        }
+      },
+      {
+        "item": "v_m2",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 1812,
+          "w": 598,
+          "h": 170
+        }
+      },
+      {
+        "item": "v_m3",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 1812,
+          "w": 598,
+          "h": 170
+        }
+      }
+    ],
+    "globalInputs": [
+      "input_time",
+      "input_src",
+      "input_cls"
+    ]
+  }
+}
+]]></definition>
+  <meta type="hiddenElements"><![CDATA[{"hideEdit": false, "hideOpenInSearch": false, "hideExport": false}]]></meta>
+</dashboard>

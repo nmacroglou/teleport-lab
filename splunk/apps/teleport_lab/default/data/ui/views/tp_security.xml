@@ -1,0 +1,49 @@
+<form version="1.1" theme="dark"><label>4 · Security Watch</label><description>Scene 4: something looks wrong. One place to see failed logins, denials, odd hours, odd locations and bot misbehavior.</description><fieldset submitButton="false" autoRun="true"><input type="time" token="time"><label>Time range</label><default><earliest>-15d@d</earliest><latest>now</latest></default></input><input type="dropdown" token="src"><label>Data source</label><choice value="index=teleport_demo">Demo data (synthetic, 15 days)</choice><choice value="index=teleport">Live lab data</choice><choice value="(index=teleport OR index=teleport_demo)">Both</choice><default>index=teleport_demo</default><initialValue>index=teleport_demo</initialValue></input></fieldset><search id="base"><query><![CDATA[
+$src$ sourcetype=teleport:audit
+| eval actor=coalesce(user, 'identity.user', user_name, "unknown")
+| eval actor_type=case(like(actor,"bot-%"),"machine", actor="system","system", like(actor,"%.localhost"),"system", true(),"human")
+| eval actor_class=case(actor_type="human","human", match(actor,"^bot-(claude|copilot|lab)"),"ai_agent", actor_type="machine","workload", true(),"system")
+| eval outcome=if(success="false" OR like(code,"%W"),"denied","allowed")
+| eval src=coalesce('addr.remote','identity.client_ip')
+| eval src_ip=replace(src,":\d+$$","")
+| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)
+| eval hour_utc=floor((_time%86400)/3600)
+| eval ttl_h=if(event="cert.create", round((strptime(substr('identity.expires',1,19)."+0000","%Y-%m-%dT%H:%M:%S%z")-_time)/3600,2), null())
+| eval is_write=if(event="db.session.query" AND match(db_query,"(?i)^\s*(create|drop|alter|insert|update|delete|truncate|grant)"),1,0)
+| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, "identity.user", "identity.roles{}", "identity.expires", "identity.client_ip", "addr.remote", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write
+| eval external=if(isnotnull(src_ip) AND src_ip!="" AND NOT (cidrmatch("10.0.0.0/8",src_ip) OR cidrmatch("172.16.0.0/12",src_ip) OR cidrmatch("192.168.0.0/16",src_ip) OR cidrmatch("127.0.0.0/8",src_ip)),1,0)
+| eval offhours=if(actor_type="human" AND (hour_utc<6 OR hour_utc>=19),1,0)
+| eval signal=case(event="user.login" AND success="false","Failed login", event="auth" AND outcome="denied","Denied SSH", event="db.session.start" AND outcome="denied","Denied DB connect", event="kube.request" AND outcome="denied","Denied Kubernetes", is_write=1,"Write attempt", in(event,"user.update","role.created","user.create") AND actor_type="human","Change outside code", actor_type="human" AND external=1,"Unusual source IP", offhours=1,"Off-hours access")
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><row><panel><title>Failed logins</title><single><search base="base"><query><![CDATA[
+| search event="user.login" success="false" | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xF0A030"]</option></single></panel><panel><title>Brute-force bursts (5+ fails in 5 min)</title><single><search base="base"><query><![CDATA[
+| search event="user.login" success="false" | bin _time span=5m | stats count by _time, actor | where count>=5 | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel><panel><title>Off-hours human activity (events)</title><single><search base="base"><query><![CDATA[
+| search offhours=1 | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xF0A030"]</option></single></panel><panel><title>Unusual source IPs (people)</title><single><search base="base"><query><![CDATA[
+| search actor_type="human" external=1 | stats dc(src_ip) as ips
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel><panel><title>Bot actions denied</title><single><search base="base"><query><![CDATA[
+| search actor_type="machine" outcome="denied" | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel><panel><title>Access changes made by people</title><single><search base="base"><query><![CDATA[
+| search event IN ("user.update","role.created","user.create") actor_type="human" | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xF0A030"]</option></single></panel><panel><title>Bulk reads (15+ queries in 5 min)</title><single><search base="base"><query><![CDATA[
+| search event="db.session.query" | bin _time span=5m | stats count by _time, actor | where count>=15 | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel></row><row><panel><title>Risk signals over time</title><chart><search base="base"><query><![CDATA[
+| where isnotnull(signal) | timechart span=1d count by signal
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"Failed login":"#F0A030","Denied SSH":"#E5534B","Denied DB connect":"#E5534B","Write attempt":"#B07CE8","Unusual source IP":"#4E9BE0","Off-hours access":"#7A8699","Change outside code":"#F0A030","Denied Kubernetes":"#E5534B"}</option></chart></panel><panel><title>Signals by identity</title><table><search base="base"><query><![CDATA[
+| where isnotnull(signal) | stats count, min(_time) as first_seen, max(_time) as last_seen, values(src_ip) as from_ip by actor, signal | eval first_seen=strftime(first_seen,"%Y-%m-%d %H:%M"), last_seen=strftime(last_seen,"%Y-%m-%d %H:%M") | sort - count
+]]></query></search><option name="count">8</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel></row><row><panel><title>Brute-force detector</title><table><search base="base"><query><![CDATA[
+| search event="user.login" success="false" | bin _time span=5m | stats count, values(src_ip) as from_ip by _time, actor | where count>=5 | sort - _time
+]]></query></search><option name="count">5</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel><panel><title>Unusual source IPs (people)</title><table><search base="base"><query><![CDATA[
+| search actor_type="human" external=1 | stats count, min(_time) as first_seen by actor, src_ip | eval first_seen=strftime(first_seen,"%Y-%m-%d %H:%M") | sort - first_seen
+]]></query></search><option name="count">5</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel></row><row><panel><title>Off-hours access (before 06:00 or after 19:00 UTC)</title><table><search base="base"><query><![CDATA[
+| search offhours=1 | sort - _time | table _time actor event resource src_ip
+]]></query></search><option name="count">6</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel><panel><title>Machine identities denied</title><table><search base="base"><query><![CDATA[
+| search actor_type="machine" outcome="denied" | eval reason=substr(error,1,110) | sort - _time | table _time actor event resource reason
+]]></query></search><option name="count">6</option><option name="wrap">true</option><option name="drilldown">none</option></table></panel></row><row><panel><title>Access changes made by people, not code</title><table><search base="base"><query><![CDATA[
+| search event IN ("user.update","role.created","user.create") actor_type="human" | sort - _time | table _time actor event name roles
+]]></query></search><option name="count">5</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel><panel><title>Bulk data reads (15+ queries in 5 min)</title><table><search base="base"><query><![CDATA[
+| search event="db.session.query" | bin _time span=5m | stats count, values(resource) as resource by _time, actor | where count>=15 | sort - _time
+]]></query></search><option name="count">5</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel><panel><title>Kubernetes: production exec and denials</title><table><search base="base"><query><![CDATA[
+| search event="kube.request" kubernetes_cluster="k8s-prod" (outcome="denied" OR request_path="*exec*") | eval what=if(outcome="denied","DENIED","exec") | sort - _time | table _time actor verb request_path response_code what
+]]></query></search><option name="count">6</option><option name="wrap">false</option><option name="drilldown">none</option><format type="color" field="what"><colorPalette type="map">{"DENIED":#E5534B,"exec":#F0A030}</colorPalette></format></table></panel></row></form>

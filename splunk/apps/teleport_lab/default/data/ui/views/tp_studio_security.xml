@@ -1,0 +1,800 @@
+<dashboard version="2" theme="dark">
+  <label>4 · Security Watch (Studio)</label>
+  <description>Failed logins, denials, odd hours, odd locations and bot misbehavior in one place.</description>
+  <definition><![CDATA[
+{
+  "title": "4 · Security Watch (Studio)",
+  "description": "Failed logins, denials, odd hours, odd locations and bot misbehavior in one place.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-15d@d,now"
+      }
+    },
+    "input_src": {
+      "type": "input.dropdown",
+      "title": "Data source",
+      "options": {
+        "token": "src",
+        "defaultValue": "index=teleport_demo",
+        "items": [
+          {
+            "label": "Demo data (synthetic, 15 days)",
+            "value": "index=teleport_demo"
+          },
+          {
+            "label": "Live lab data",
+            "value": "index=teleport"
+          },
+          {
+            "label": "Both",
+            "value": "(index=teleport OR index=teleport_demo)"
+          }
+        ]
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_base": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit\n| eval actor=coalesce(user, 'identity.user', user_name, \"unknown\")\n| eval actor_type=case(like(actor,\"bot-%\"),\"machine\", actor=\"system\",\"system\", like(actor,\"%.localhost\"),\"system\", true(),\"human\")\n| eval actor_class=case(actor_type=\"human\",\"human\", match(actor,\"^bot-(claude|copilot|lab)\"),\"ai_agent\", actor_type=\"machine\",\"workload\", true(),\"system\")\n| eval outcome=if(success=\"false\" OR like(code,\"%W\"),\"denied\",\"allowed\")\n| eval src=coalesce('addr.remote','identity.client_ip')\n| eval src_ip=replace(src,\":\\d+$$\",\"\")\n| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)\n| eval hour_utc=floor((_time%86400)/3600)\n| eval ttl_h=if(event=\"cert.create\", round((strptime(substr('identity.expires',1,19).\"+0000\",\"%Y-%m-%dT%H:%M:%S%z\")-_time)/3600,2), null())\n| eval is_write=if(event=\"db.session.query\" AND match(db_query,\"(?i)^\\s*(create|drop|alter|insert|update|delete|truncate|grant)\"),1,0)\n| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, \"identity.user\", \"identity.roles{}\", \"identity.expires\", \"identity.client_ip\", \"addr.remote\", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write\n| eval external=if(isnotnull(src_ip) AND src_ip!=\"\" AND NOT (cidrmatch(\"10.0.0.0/8\",src_ip) OR cidrmatch(\"172.16.0.0/12\",src_ip) OR cidrmatch(\"192.168.0.0/16\",src_ip) OR cidrmatch(\"127.0.0.0/8\",src_ip)),1,0)\n| eval offhours=if(actor_type=\"human\" AND (hour_utc<6 OR hour_utc>=19),1,0)\n| eval signal=case(event=\"user.login\" AND success=\"false\",\"Failed login\", event=\"auth\" AND outcome=\"denied\",\"Denied SSH\", event=\"db.session.start\" AND outcome=\"denied\",\"Denied DB connect\", event=\"kube.request\" AND outcome=\"denied\",\"Denied Kubernetes\", is_write=1,\"Write attempt\", in(event,\"user.update\",\"role.created\",\"user.create\") AND actor_type=\"human\",\"Change outside code\", actor_type=\"human\" AND external=1,\"Unusual source IP\", offhours=1,\"Off-hours access\")",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "base"
+    },
+    "k1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count(eval(event=\"user.login\" AND success=\"false\")) as total | timechart span=1d count(eval(event=\"user.login\" AND success=\"false\")) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count(eval(offhours=1)) as total | timechart span=1d count(eval(offhours=1)) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k5": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count(eval(actor_type=\"machine\" AND outcome=\"denied\")) as total | timechart span=1d count(eval(actor_type=\"machine\" AND outcome=\"denied\")) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k6": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count(eval(in(event,\"user.update\",\"role.created\",\"user.create\") AND actor_type=\"human\")) as total | timechart span=1d count(eval(in(event,\"user.update\",\"role.created\",\"user.create\") AND actor_type=\"human\")) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"user.login\" success=\"false\" | bin _time span=5m | stats count by _time, actor | where count>=5 | stats count"
+      }
+    },
+    "k4": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search actor_type=\"human\" external=1 | stats dc(src_ip) as ips"
+      }
+    },
+    "k7": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"db.session.query\" | bin _time span=5m | stats count by _time, actor | where count>=15 | stats count"
+      }
+    },
+    "c1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| where isnotnull(signal) | timechart span=1d count by signal"
+      }
+    },
+    "t1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| where isnotnull(signal) | stats count, min(_time) as first_seen, max(_time) as last_seen, values(src_ip) as from_ip by actor, signal | eval first_seen=strftime(first_seen,\"%Y-%m-%d %H:%M\"), last_seen=strftime(last_seen,\"%Y-%m-%d %H:%M\"), from_ip=mvjoin(mvindex(from_ip,0,1),\", \") | sort - count"
+      }
+    },
+    "t2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"user.login\" success=\"false\" | bin _time span=5m | stats count, values(src_ip) as from_ip by _time, actor | where count>=5 | sort - _time | eval _time=strftime(_time,\"%Y-%m-%d %H:%M\"), from_ip=mvjoin(mvindex(from_ip,0,1),\", \")"
+      }
+    },
+    "t3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search actor_type=\"human\" external=1 | stats count, min(_time) as first_seen by actor, src_ip | eval first_seen=strftime(first_seen,\"%Y-%m-%d %H:%M\") | sort - first_seen"
+      }
+    },
+    "t4": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search offhours=1 | sort - _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M\") | table time actor event resource src_ip"
+      }
+    },
+    "t5": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search actor_type=\"machine\" outcome=\"denied\" | eval reason=substr(error,1,110) | sort - _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M\") | table time actor event resource reason"
+      }
+    },
+    "t6": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event IN (\"user.update\",\"role.created\",\"user.create\") actor_type=\"human\" | sort - _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M\") | table time actor event name roles"
+      }
+    },
+    "t7": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"db.session.query\" | bin _time span=5m | stats count, values(resource) as resource by _time, actor | where count>=15 | sort - _time | eval _time=strftime(_time,\"%Y-%m-%d %H:%M\"), resource=mvjoin(resource,\", \")"
+      }
+    },
+    "t8": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"kube.request\" kubernetes_cluster=\"k8s-prod\" (outcome=\"denied\" OR request_path=\"*exec*\") | eval what=if(outcome=\"denied\",\"DENIED\",\"exec\") | sort - _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M\") | table time actor verb request_path response_code what"
+      }
+    }
+  },
+  "visualizations": {
+    "v_k1": {
+      "type": "splunk.singlevalue",
+      "title": "FAILED LOGINS",
+      "dataSources": {
+        "primary": "k1"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#F0A030"
+          }
+        ]
+      }
+    },
+    "v_k2": {
+      "type": "splunk.singlevalue",
+      "title": "BRUTE-FORCE BURSTS (5+ IN 5 MIN)",
+      "dataSources": {
+        "primary": "k2"
+      },
+      "options": {
+        "majorColor": "#E5534B",
+        "sparklineDisplay": "off",
+        "trendDisplay": "off",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k3": {
+      "type": "splunk.singlevalue",
+      "title": "OFF-HOURS HUMAN EVENTS",
+      "dataSources": {
+        "primary": "k3"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#F0A030"
+          }
+        ]
+      }
+    },
+    "v_k4": {
+      "type": "splunk.singlevalue",
+      "title": "UNUSUAL SOURCE IPS (PEOPLE)",
+      "dataSources": {
+        "primary": "k4"
+      },
+      "options": {
+        "majorColor": "#4E9BE0",
+        "sparklineDisplay": "off",
+        "trendDisplay": "off",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k5": {
+      "type": "splunk.singlevalue",
+      "title": "BOT ACTIONS DENIED",
+      "dataSources": {
+        "primary": "k5"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#E5534B"
+          }
+        ]
+      }
+    },
+    "v_k6": {
+      "type": "splunk.singlevalue",
+      "title": "ACCESS CHANGES BY PEOPLE",
+      "dataSources": {
+        "primary": "k6"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#F0A030"
+          }
+        ]
+      }
+    },
+    "v_k7": {
+      "type": "splunk.singlevalue",
+      "title": "BULK READS (15+ IN 5 MIN)",
+      "dataSources": {
+        "primary": "k7"
+      },
+      "options": {
+        "majorColor": "#B07CE8",
+        "sparklineDisplay": "off",
+        "trendDisplay": "off",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_c1": {
+      "type": "splunk.column",
+      "title": "Risk signals over time",
+      "dataSources": {
+        "primary": "c1"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "legendDisplay": "bottom",
+        "stackMode": "stacked",
+        "seriesColorsByField": {
+          "Failed login": "#F0A030",
+          "Denied SSH": "#E5534B",
+          "Denied DB connect": "#FF7A70",
+          "Write attempt": "#B07CE8",
+          "Unusual source IP": "#4E9BE0",
+          "Off-hours access": "#7A8699",
+          "Change outside code": "#D9A441",
+          "Denied Kubernetes": "#B03A33"
+        }
+      }
+    },
+    "v_t1": {
+      "type": "splunk.table",
+      "title": "Signals by identity",
+      "dataSources": {
+        "primary": "t1"
+      },
+      "options": {
+        "count": 8,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t2": {
+      "type": "splunk.table",
+      "title": "Brute-force detector",
+      "dataSources": {
+        "primary": "t2"
+      },
+      "options": {
+        "count": 5,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t3": {
+      "type": "splunk.table",
+      "title": "Unusual source IPs (people)",
+      "dataSources": {
+        "primary": "t3"
+      },
+      "options": {
+        "count": 5,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t4": {
+      "type": "splunk.table",
+      "title": "Off-hours access (before 06:00 or after 19:00 UTC)",
+      "dataSources": {
+        "primary": "t4"
+      },
+      "options": {
+        "count": 5,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t5": {
+      "type": "splunk.table",
+      "title": "Machine identities denied",
+      "dataSources": {
+        "primary": "t5"
+      },
+      "options": {
+        "count": 5,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t6": {
+      "type": "splunk.table",
+      "title": "Access changes made by people, not code",
+      "dataSources": {
+        "primary": "t6"
+      },
+      "options": {
+        "count": 5,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t7": {
+      "type": "splunk.table",
+      "title": "Bulk data reads (15+ queries in 5 min)",
+      "dataSources": {
+        "primary": "t7"
+      },
+      "options": {
+        "count": 5,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t8": {
+      "type": "splunk.table",
+      "title": "Kubernetes: production exec and denials",
+      "dataSources": {
+        "primary": "t8"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true,
+        "columnFormat": {
+          "what": {
+            "rowBackgroundColors": "> table | seriesByName(\"what\") | matchValue(whatBg)"
+          }
+        }
+      },
+      "context": {
+        "whatBg": [
+          {
+            "match": "DENIED",
+            "value": "#7A2B27"
+          },
+          {
+            "match": "exec",
+            "value": "#7A5A1A"
+          }
+        ]
+      }
+    },
+    "v_l1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ①  What is happening right now",
+        "fontColor": "#F0A030",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_l2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ②  The detectors",
+        "fontColor": "#E5534B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_l3": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ③  Machines, changes and bulk reads",
+        "fontColor": "#B07CE8",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_l4": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ④  Kubernetes production",
+        "fontColor": "#3FB6B6",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_bar": {
+      "type": "splunk.rectangle",
+      "options": {
+        "fillColor": "#E5534B",
+        "strokeColor": "#E5534B",
+        "rx": 4
+      }
+    },
+    "v_h1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# Scene 4: security watch. Something looks wrong: where do you look?",
+        "fontColor": "#FFFFFF",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_h2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "Failed logins, denials, odd hours, odd places and bot misbehavior, each tied to an identity.",
+        "fontColor": "#9FB3CC",
+        "backgroundColor": "transparent"
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1920,
+      "height": 1870,
+      "display": "auto-scale",
+      "backgroundColor": "#0B0F17"
+    },
+    "structure": [
+      {
+        "item": "v_bar",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 30,
+          "w": 10,
+          "h": 86
+        }
+      },
+      {
+        "item": "v_h1",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 24,
+          "w": 1750,
+          "h": 56
+        }
+      },
+      {
+        "item": "v_h2",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 82,
+          "w": 1750,
+          "h": 34
+        }
+      },
+      {
+        "item": "v_k1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k2",
+        "type": "block",
+        "position": {
+          "x": 306,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k3",
+        "type": "block",
+        "position": {
+          "x": 572,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k4",
+        "type": "block",
+        "position": {
+          "x": 838,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k5",
+        "type": "block",
+        "position": {
+          "x": 1104,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k6",
+        "type": "block",
+        "position": {
+          "x": 1370,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k7",
+        "type": "block",
+        "position": {
+          "x": 1636,
+          "y": 140,
+          "w": 244,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_l1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 350,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_l2",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 800,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_l3",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1170,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_l4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1530,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_c1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 392,
+          "w": 1000,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_t1",
+        "type": "block",
+        "position": {
+          "x": 1062,
+          "y": 392,
+          "w": 818,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_t2",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 842,
+          "w": 598,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t3",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 842,
+          "w": 598,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t4",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 842,
+          "w": 598,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t5",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1212,
+          "w": 598,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t6",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 1212,
+          "w": 598,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t7",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 1212,
+          "w": 598,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t8",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1572,
+          "w": 1840,
+          "h": 260
+        }
+      }
+    ],
+    "globalInputs": [
+      "input_time",
+      "input_src"
+    ]
+  }
+}
+]]></definition>
+  <meta type="hiddenElements"><![CDATA[{"hideEdit": false, "hideOpenInSearch": false, "hideExport": false}]]></meta>
+</dashboard>

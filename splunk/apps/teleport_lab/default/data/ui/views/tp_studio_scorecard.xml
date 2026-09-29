@@ -1,0 +1,663 @@
+<dashboard version="2" theme="dark">
+  <label>Trust Scorecard (Studio)</label>
+  <description>Short-lived credentials, attributed actions, policy that holds</description>
+  <definition><![CDATA[
+{
+  "title": "Trust Scorecard (Studio)",
+  "description": "Short-lived credentials, attributed actions, and what policy blocked.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-15d@d,now"
+      }
+    },
+    "input_src": {
+      "type": "input.dropdown",
+      "title": "Data source",
+      "options": {
+        "token": "src",
+        "defaultValue": "index=teleport_demo",
+        "items": [
+          {
+            "label": "Demo data (synthetic, 15 days)",
+            "value": "index=teleport_demo"
+          },
+          {
+            "label": "Live lab data",
+            "value": "index=teleport"
+          },
+          {
+            "label": "Both",
+            "value": "(index=teleport OR index=teleport_demo)"
+          }
+        ]
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_base": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit\n| eval actor=coalesce(user, 'identity.user', user_name, \"unknown\")\n| eval actor_type=case(like(actor,\"bot-%\"),\"machine\", actor=\"system\",\"system\", like(actor,\"%.localhost\"),\"system\", true(),\"human\")\n| eval actor_class=case(actor_type=\"human\",\"human\", match(actor,\"^bot-(claude|copilot|lab)\"),\"ai_agent\", actor_type=\"machine\",\"workload\", true(),\"system\")\n| eval outcome=if(success=\"false\" OR like(code,\"%W\"),\"denied\",\"allowed\")\n| eval src=coalesce('addr.remote','identity.client_ip')\n| eval src_ip=replace(src,\":\\d+$$\",\"\")\n| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)\n| eval hour_utc=floor((_time%86400)/3600)\n| eval ttl_h=if(event=\"cert.create\", round((strptime(substr('identity.expires',1,19).\"+0000\",\"%Y-%m-%dT%H:%M:%S%z\")-_time)/3600,2), null())\n| eval is_write=if(event=\"db.session.query\" AND match(db_query,\"(?i)^\\s*(create|drop|alter|insert|update|delete|truncate|grant)\"),1,0)\n| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, \"identity.user\", \"identity.roles{}\", \"identity.expires\", \"identity.client_ip\", \"addr.remote\", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "base"
+    },
+    "k1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | eventstats count as total | timechart span=1d count as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | eventstats count as c, count(eval(ttl_h<=12)) as s | eval total=if(c>0,round(s/c*100,1),0) | timechart span=1d count as n, count(eval(ttl_h<=12)) as sh, first(total) as total | eval events=if(n>0,round(sh/n*100,1),null()) | eventstats max(total) as total | fields _time events total"
+      }
+    },
+    "k3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | eventstats count(eval(ttl_h>24)) as total | timechart span=1d count(eval(ttl_h>24)) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k4": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | eventstats avg(ttl_h) as total | timechart span=1d avg(ttl_h) as events, first(total) as total | eventstats max(total) as total | eval events=round(events,1), total=round(total,1)"
+      }
+    },
+    "k5": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count(eval(outcome=\"denied\")) as total | timechart span=1d count(eval(outcome=\"denied\")) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k6": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eventstats count as c, count(eval(actor_type=\"machine\")) as m | eval total=if(c>0,round(m/c*100,0),0) | timechart span=1d count as n, count(eval(actor_type=\"machine\")) as mm, first(total) as total | eval events=if(n>0,round(mm/n*100,0),null()) | eventstats max(total) as total | fields _time events total"
+      }
+    },
+    "c1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | timechart span=1d count by actor_type"
+      }
+    },
+    "c2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | stats avg(ttl_h) as avg_hours by actor_type | eval avg_hours=round(avg_hours,2)"
+      }
+    },
+    "c3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| where outcome=\"denied\" | timechart span=1d count by event"
+      }
+    },
+    "t1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| where outcome=\"denied\" | eval reason=substr(error,1,110) | stats count, latest(_time) as last by actor, actor_class, event, reason | eval last=strftime(last,\"%Y-%m-%d %H:%M\") | sort - count | head 50"
+      }
+    }
+  },
+  "visualizations": {
+    "v_bar": {
+      "type": "splunk.rectangle",
+      "options": {
+        "fillColor": "#3FB68B",
+        "strokeColor": "#3FB68B",
+        "rx": 4
+      }
+    },
+    "v_h1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# Trust Scorecard: credentials that expire, actions that are attributed, policy that holds",
+        "fontColor": "#FFFFFF",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_h2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "The board-level answer to: can we prove who did what, with what access, and what was refused?",
+        "fontColor": "#9FB3CC",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_k1": {
+      "type": "splunk.singlevalue",
+      "title": "CREDENTIALS ISSUED",
+      "dataSources": {
+        "primary": "k1"
+      },
+      "options": {
+        "majorColor": "#4E9BE0",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#4E9BE0",
+        "sparklineAreaColor": "#4E9BE0",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k2": {
+      "type": "splunk.singlevalue",
+      "title": "SHORT-LIVED (12 HOURS OR LESS)",
+      "dataSources": {
+        "primary": "k2"
+      },
+      "options": {
+        "majorColor": "#3FB68B",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56,
+        "unit": "%"
+      }
+    },
+    "v_k3": {
+      "type": "splunk.singlevalue",
+      "title": "LONG-LIVED CREDENTIALS (OVER 24H)",
+      "dataSources": {
+        "primary": "k3"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#E5534B"
+          }
+        ]
+      }
+    },
+    "v_k4": {
+      "type": "splunk.singlevalue",
+      "title": "AVERAGE LIFETIME (HOURS)",
+      "dataSources": {
+        "primary": "k4"
+      },
+      "options": {
+        "majorColor": "#F0A030",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#F0A030",
+        "sparklineAreaColor": "#F0A030",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k5": {
+      "type": "splunk.singlevalue",
+      "title": "ACTIONS BLOCKED BY POLICY",
+      "dataSources": {
+        "primary": "k5"
+      },
+      "options": {
+        "majorColor": "#F0A030",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#F0A030",
+        "sparklineAreaColor": "#F0A030",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k6": {
+      "type": "splunk.singlevalue",
+      "title": "MACHINE SHARE OF ACTIVITY",
+      "dataSources": {
+        "primary": "k6"
+      },
+      "options": {
+        "majorColor": "#3FB6B6",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB6B6",
+        "sparklineAreaColor": "#3FB6B6",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56,
+        "unit": "%"
+      }
+    },
+    "v_c1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ①  Credentials issued: people vs machines",
+        "fontColor": "#4E9BE0",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_c2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ②  How long they live",
+        "fontColor": "#F0A030",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_c3": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ③  What policy blocked",
+        "fontColor": "#E5534B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_p1": {
+      "type": "splunk.column",
+      "title": "Certificates per day",
+      "dataSources": {
+        "primary": "c1"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "stackMode": "stacked",
+        "seriesColorsByField": {
+          "human": "#4E9BE0",
+          "machine": "#3FB6B6",
+          "system": "#7A8699"
+        },
+        "legendDisplay": "bottom"
+      }
+    },
+    "v_p2": {
+      "type": "splunk.bar",
+      "title": "Average lifetime by identity type (hours)",
+      "dataSources": {
+        "primary": "c2"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "seriesColors": [
+          "#F0A030"
+        ],
+        "legendDisplay": "off"
+      }
+    },
+    "v_p3": {
+      "type": "splunk.column",
+      "title": "Blocked per day, by event",
+      "dataSources": {
+        "primary": "c3"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "stackMode": "stacked",
+        "legendDisplay": "bottom"
+      }
+    },
+    "v_c4": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ④  What was blocked, and why",
+        "fontColor": "#B07CE8",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_t1": {
+      "type": "splunk.table",
+      "title": "Every refusal is attributed to an identity  (open the drill-down page for the full trail)",
+      "dataSources": {
+        "primary": "t1"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "wrap": true,
+        "showRowNumbers": false,
+        "columnFormat": {
+          "actor_class": {
+            "rowBackgroundColors": "> table | seriesByName(\"actor_class\") | matchValue(actor_classBgConfig)"
+          }
+        }
+      },
+      "context": {
+        "actor_classBgConfig": [
+          {
+            "match": "ai_agent",
+            "value": "#5B3A8C"
+          },
+          {
+            "match": "human",
+            "value": "#1F4E79"
+          },
+          {
+            "match": "workload",
+            "value": "#1F6B6B"
+          },
+          {
+            "match": "system",
+            "value": "#3A4352"
+          }
+        ]
+      }
+    },
+    "v_c5": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ⑤  The customer story: before and after",
+        "fontColor": "#3FB68B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_b1": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### Before  (PPI Financial Services)\nManual certificate management, complex onboarding, fragmented access workflows."
+      }
+    },
+    "v_b2": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### After\nSingle sign-on, short-lived access, every session audited, access policy managed as code (Kubernetes operator and Terraform)."
+      }
+    },
+    "v_b3": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### What this lab shows\nThe same idea for humans, machines **and** AI agents: credentials that expire in hours, each action tied to an identity, denials recorded. Next: [Unified Identity Layer](/app/teleport_lab/tp_studio_identity) · [Command Center drill-down](/app/teleport_lab/teleport_overview)"
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1920,
+      "height": 1440,
+      "display": "auto-scale",
+      "backgroundColor": "#0B0F17"
+    },
+    "structure": [
+      {
+        "item": "v_bar",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 30,
+          "w": 10,
+          "h": 86
+        }
+      },
+      {
+        "item": "v_h1",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 24,
+          "w": 1750,
+          "h": 56
+        }
+      },
+      {
+        "item": "v_h2",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 82,
+          "w": 1750,
+          "h": 34
+        }
+      },
+      {
+        "item": "v_k1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k2",
+        "type": "block",
+        "position": {
+          "x": 350,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k3",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k4",
+        "type": "block",
+        "position": {
+          "x": 970,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k5",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k6",
+        "type": "block",
+        "position": {
+          "x": 1590,
+          "y": 140,
+          "w": 288,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_c1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 350,
+          "w": 598,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_p1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 392,
+          "w": 598,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_c2",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 350,
+          "w": 598,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_p2",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 392,
+          "w": 598,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_c3",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 350,
+          "w": 598,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_p3",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 392,
+          "w": 598,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_c4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 800,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_t1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 842,
+          "w": 1840,
+          "h": 330
+        }
+      },
+      {
+        "item": "v_c5",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1200,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_b1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1242,
+          "w": 598,
+          "h": 170
+        }
+      },
+      {
+        "item": "v_b2",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 1242,
+          "w": 598,
+          "h": 170
+        }
+      },
+      {
+        "item": "v_b3",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 1242,
+          "w": 598,
+          "h": 170
+        }
+      }
+    ],
+    "globalInputs": [
+      "input_time",
+      "input_src"
+    ]
+  }
+}
+]]></definition>
+  <meta type="hiddenElements"><![CDATA[{"hideEdit": false, "hideOpenInSearch": false, "hideExport": false}]]></meta>
+</dashboard>

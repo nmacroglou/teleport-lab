@@ -1,0 +1,39 @@
+<form version="1.1" theme="dark"><label>2 · Auditor Evidence</label><description>Scene 2: "Who touched the database, when, and what did they run?" Every answer comes from the audit log.</description><fieldset submitButton="false" autoRun="true"><input type="time" token="time"><label>Time range</label><default><earliest>-15d@d</earliest><latest>now</latest></default></input><input type="dropdown" token="src"><label>Data source</label><choice value="index=teleport_demo">Demo data (synthetic, 15 days)</choice><choice value="index=teleport">Live lab data</choice><choice value="(index=teleport OR index=teleport_demo)">Both</choice><default>index=teleport_demo</default><initialValue>index=teleport_demo</initialValue></input><input type="text" token="who"><label>Identity (name or *)</label><default>*</default><initialValue>*</initialValue></input><input type="text" token="res"><label>Database (name or *)</label><default>*</default><initialValue>*</initialValue></input></fieldset><search id="base"><query><![CDATA[
+$src$ sourcetype=teleport:audit
+| eval actor=coalesce(user, 'identity.user', user_name, "unknown")
+| eval actor_type=case(like(actor,"bot-%"),"machine", actor="system","system", like(actor,"%.localhost"),"system", true(),"human")
+| eval actor_class=case(actor_type="human","human", match(actor,"^bot-(claude|copilot|lab)"),"ai_agent", actor_type="machine","workload", true(),"system")
+| eval outcome=if(success="false" OR like(code,"%W"),"denied","allowed")
+| eval src=coalesce('addr.remote','identity.client_ip')
+| eval src_ip=replace(src,":\d+$$","")
+| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)
+| eval hour_utc=floor((_time%86400)/3600)
+| eval ttl_h=if(event="cert.create", round((strptime(substr('identity.expires',1,19)."+0000","%Y-%m-%dT%H:%M:%S%z")-_time)/3600,2), null())
+| eval is_write=if(event="db.session.query" AND match(db_query,"(?i)^\s*(create|drop|alter|insert|update|delete|truncate|grant)"),1,0)
+| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, "identity.user", "identity.roles{}", "identity.expires", "identity.client_ip", "addr.remote", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write
+| search event IN ("db.session.start","db.session.query","db.session.end") resource="$res$" actor="$who$"
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><row><panel><title>Database sessions</title><single><search base="base"><query><![CDATA[
+| search event="db.session.start" outcome="allowed" | stats count
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Identities that connected</title><single><search base="base"><query><![CDATA[
+| search event="db.session.start" outcome="allowed" | stats dc(actor) as ids
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Queries on record</title><single><search base="base"><query><![CDATA[
+| search event="db.session.query" | stats count
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Connections denied</title><single><search base="base"><query><![CDATA[
+| search event="db.session.start" outcome="denied" | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel><panel><title>Write attempts</title><single><search base="base"><query><![CDATA[
+| stats sum(is_write) as writes
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xF0A030"]</option></single></panel></row><row><panel><title>Who accessed the database</title><table><search base="base"><query><![CDATA[
+| stats count(eval(event="db.session.start" AND outcome="allowed")) as sessions, count(eval(event="db.session.query")) as queries, sum(is_write) as write_attempts, dc(db_user) as db_users, min(_time) as first_seen, max(_time) as last_seen by actor, actor_type | eval first_seen=strftime(first_seen,"%Y-%m-%d %H:%M"), last_seen=strftime(last_seen,"%Y-%m-%d %H:%M") | sort - queries
+]]></query></search><option name="count">8</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel><panel><title>Database activity per day</title><chart><search base="base"><query><![CDATA[
+| search event="db.session.query" | timechart span=1d count by actor limit=8 useother=f
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option></chart></panel></row><row><panel><title>When is the database used? (UTC hour, by identity)</title><table><search base="base"><query><![CDATA[
+| search event="db.session.start" | eval hr=printf("%02d",hour_utc) | chart count over actor by hr
+]]></query></search><option name="count">10</option><option name="wrap">false</option><option name="drilldown">none</option><format type="color"><colorPalette type="minMidMax" minColor="#1B2A41" midColor="#3A6EA5" maxColor="#7FD1FF"></colorPalette><scale type="minMidMax"></scale></format></table></panel></row><row><panel><title>Full query log (evidence trail)</title><table><search base="base"><query><![CDATA[
+| search event="db.session.query" | eval kind=if(is_write=1,"WRITE","read") | sort - _time | table _time actor actor_type db_user kind db_query sid uid
+]]></query></search><option name="count">10</option><option name="wrap">true</option><option name="drilldown">none</option><format type="color" field="kind"><colorPalette type="map">{"WRITE":#F0A030,"read":#3FB68B}</colorPalette></format></table></panel></row><row><panel><title>Questions an auditor asks, and where the answer lives</title><html>
+<table style="width:100%;line-height:1.7"><tr><td><b>Who accessed it?</b></td><td>"Who accessed the database" table</td></tr>
+<tr><td><b>What did they run?</b></td><td>"Full query log", including the unique event ID (uid)</td></tr>
+<tr><td><b>Was it allowed?</b></td><td>Connections denied and the Security Watch dashboard</td></tr>
+<tr><td><b>Was the credential short-lived?</b></td><td>Trust Scorecard: credential lifetime</td></tr>
+<tr><td><b>Can I export it?</b></td><td>Use the Export button on any table or search</td></tr></table>
+<i>This supports evidence for access-control and logging requirements (for example C5, KRITIS, DORA). It does not certify compliance by itself.</i></html></panel></row></form>

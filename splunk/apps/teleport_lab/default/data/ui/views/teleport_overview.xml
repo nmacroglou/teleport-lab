@@ -1,0 +1,81 @@
+<form version="1.1" theme="dark"><label>Command Center (all events)</label><description>Everything in one place. Click "Denied / failed" to drill into WHY, then WHO, then the exact events. Your filters stay applied at every level.</description><fieldset submitButton="false" autoRun="true"><input type="time" token="time"><label>Time range</label><default><earliest>-15d@d</earliest><latest>now</latest></default></input><input type="dropdown" token="src"><label>Data source</label><choice value="index=teleport_demo">Demo data (synthetic, 15 days)</choice><choice value="index=teleport">Live lab data</choice><choice value="(index=teleport OR index=teleport_demo)">Both</choice><default>index=teleport_demo</default><initialValue>index=teleport_demo</initialValue></input><input type="dropdown" token="cls"><label>Identity class</label><choice value="*">All identities</choice><choice value="human">Humans</choice><choice value="ai_agent">AI agents</choice><choice value="workload">Workloads (services, CI)</choice><choice value="system">Teleport system</choice><default>*</default><initialValue>*</initialValue></input><input type="text" token="d_reason"><label>Why (drill)</label><default>*</default><initialValue>*</initialValue></input><input type="text" token="d_actor"><label>Who (drill)</label><default>*</default><initialValue>*</initialValue></input></fieldset><search id="base"><query><![CDATA[
+$src$ sourcetype=teleport:audit
+| eval actor=coalesce(user, 'identity.user', user_name, "unknown")
+| eval actor_type=case(like(actor,"bot-%"),"machine", actor="system","system", like(actor,"%.localhost"),"system", true(),"human")
+| eval actor_class=case(actor_type="human","human", match(actor,"^bot-(claude|copilot|lab)"),"ai_agent", actor_type="machine","workload", true(),"system")
+| eval outcome=if(success="false" OR like(code,"%W"),"denied","allowed")
+| eval src=coalesce('addr.remote','identity.client_ip')
+| eval src_ip=replace(src,":\d+$$","")
+| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)
+| eval hour_utc=floor((_time%86400)/3600)
+| eval ttl_h=if(event="cert.create", round((strptime(substr('identity.expires',1,19)."+0000","%Y-%m-%dT%H:%M:%S%z")-_time)/3600,2), null())
+| eval is_write=if(event="db.session.query" AND match(db_query,"(?i)^\s*(create|drop|alter|insert|update|delete|truncate|grant)"),1,0)
+| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, "identity.user", "identity.roles{}", "identity.expires", "identity.client_ip", "addr.remote", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write
+| search actor_class="$cls$"
+| eval deny_reason=if(outcome="denied", case(like(error,"%second factor%"),"Bad credentials or MFA", like(error,"%access to db denied%"),"Database access refused by role", like(error,"%valid principals%"),"SSH login not allowed for this identity", like(error,"%token%"),"Join token bad or expired", event="kube.request","Kubernetes request forbidden", true(),"Other policy denial"), null())
+| eval control=case(deny_reason="Bad credentials or MFA","Authentication and MFA", deny_reason="Database access refused by role","Role-based access control (RBAC)", deny_reason="SSH login not allowed for this identity","Certificate logins (RBAC)", deny_reason="Join token bad or expired","Machine ID join token (short TTL)", deny_reason="Kubernetes request forbidden","Kubernetes access rules (RBAC)", true(),"Policy")
+| eval meaning=case(deny_reason="Bad credentials or MFA","The password or second factor was wrong. Teleport refused before granting any access.", deny_reason="Database access refused by role","The identity asked for a database user its role does not allow. Least privilege held.", deny_reason="SSH login not allowed for this identity","The certificate has no permission to log in as that account on that server.", deny_reason="Join token bad or expired","A bot tried to join with an expired or unknown token, so it received no identity at all.", deny_reason="Kubernetes request forbidden","The role does not allow this cluster action in this environment (for example production).", true(),"Refused by policy.")
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><row><panel><title>Total events</title><single><search base="base"><query><![CDATA[
+| stats count
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Denied / failed: click to drill</title><single><search base="base"><query><![CDATA[
+| where outcome="denied" | stats count
+]]></query></search><option name="drilldown">all</option><drilldown><set token="form.d_reason">*</set><set token="form.d_actor">*</set><unset token="d_uid"></unset></drilldown><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel><panel><title>Failed logins</title><single><search base="base"><query><![CDATA[
+| search event="user.login" success="false" | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xF0A030"]</option></single></panel><panel><title>AI-agent actions</title><single><search base="base"><query><![CDATA[
+| search actor_class="ai_agent" | stats count
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Workload (service) actions</title><single><search base="base"><query><![CDATA[
+| search actor_class="workload" | stats count
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Distinct identities</title><single><search base="base"><query><![CDATA[
+| stats dc(actor) as identities
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel></row><row><panel><title>Allowed vs denied over time</title><chart><search base="base"><query><![CDATA[
+| timechart count by outcome
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"allowed":"#3FB68B","denied":"#E5534B"}</option></chart></panel><panel><title>Activity by identity class</title><chart><search base="base"><query><![CDATA[
+| timechart count by actor_class
+]]></query></search><option name="charting.chart">area</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"human":"#4E9BE0","ai_agent":"#B07CE8","workload":"#3FB6B6","system":"#7A8699"}</option></chart></panel></row><row><panel><title>Denied / failed: why? (guided drill-down)</title><html>
+<div style="line-height:1.6">
+<b>Use case: "Why was the AI agent refused?"</b> Click a reason in Level 1, then an identity in Level 2, then an event in Level 3. Level 4 shows the raw evidence.<br/>
+<b>Filters that stay applied at every level:</b> Identity class, Why and Who (the boxes at the top; edit or clear them any time), plus the time range and data source. Tip: set <i>Identity class</i> to <b>AI agents</b> first to keep the whole story about non-deterministic actors.<br/>
+Now showing: class = <b>$cls$</b> · why = <b>$d_reason$</b> · who = <b>$d_actor$</b> (an asterisk means "all")
+</div></html></panel></row><row><panel><title>Level 1 · Why were requests denied?</title><table><search base="base"><query><![CDATA[
+| where outcome="denied"
+| stats count as denials, dc(actor) as identities, values(actor_class) as classes, latest(_time) as last_seen by deny_reason, control, meaning
+| eval last_seen=strftime(last_seen,"%Y-%m-%d %H:%M")
+| sort - denials
+| table deny_reason denials identities classes control meaning last_seen
+]]></query></search><option name="count">6</option><option name="wrap">true</option><option name="drilldown">row</option><drilldown><set token="form.d_reason">$row.deny_reason$</set><set token="form.d_actor">*</set><unset token="d_uid"></unset></drilldown></table></panel></row><row><panel><title>Level 2 · Who was denied? (for the reason chosen above)</title><table><search base="base"><query><![CDATA[
+| where outcome="denied"
+| search deny_reason="$d_reason$"
+| stats count as denials, values(event) as events, values(resource) as resources, latest(_time) as last_seen by actor, actor_class
+| eval last_seen=strftime(last_seen,"%Y-%m-%d %H:%M")
+| sort - denials
+]]></query></search><option name="count">6</option><option name="wrap">true</option><option name="drilldown">row</option><drilldown><set token="form.d_actor">$row.actor$</set><unset token="d_uid"></unset></drilldown><format type="color" field="actor_class"><colorPalette type="map">{"human":#4E9BE0,"ai_agent":#B07CE8,"workload":#3FB6B6,"system":#7A8699}</colorPalette></format></table></panel><panel><title>Denials by identity class, per day</title><chart><search base="base"><query><![CDATA[
+| where outcome="denied" | search deny_reason="$d_reason$" | timechart span=1d count by actor_class
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"human":"#4E9BE0","ai_agent":"#B07CE8","workload":"#3FB6B6","system":"#7A8699"}</option></chart></panel></row><row><panel><title>Level 3 · The events (click one for the evidence card)</title><table><search base="base"><query><![CDATA[
+| where outcome="denied"
+| search deny_reason="$d_reason$" actor="$d_actor$"
+| eval why=substr(error,1,140)
+| sort - _time
+| table _time actor actor_class event code resource src why uid
+]]></query></search><option name="count">6</option><option name="wrap">true</option><option name="drilldown">row</option><drilldown><set token="d_uid">$row.uid$</set></drilldown><format type="color" field="actor_class"><colorPalette type="map">{"human":#4E9BE0,"ai_agent":#B07CE8,"workload":#3FB6B6,"system":#7A8699}</colorPalette></format></table></panel><panel><title>This identity: allowed vs denied over time</title><chart><search base="base"><query><![CDATA[
+| search actor="$d_actor$" | timechart span=1d count by outcome
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"allowed":"#3FB68B","denied":"#E5534B"}</option></chart></panel></row><row><panel depends="$d_uid$"><title>Level 4 · Evidence card: the raw audit event</title><table><search><query><![CDATA[
+$src$ sourcetype=teleport:audit uid="$d_uid$" | eval actor=coalesce(user,'identity.user',user_name) | eval evidence=_raw | table _time actor event code evidence
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><option name="wrap">true</option><option name="drilldown">none</option><option name="count">1</option></table></panel><panel depends="$d_uid$"><title>What the evidence card proves</title><html>
+<div style="line-height:1.6"><b>Who</b> (identity), <b>what</b> (event and code), <b>when</b> (timestamp), <b>from where</b> (source address) and <b>which control refused it</b> (Level 1).<br/>
+Every event has a unique ID (<i>uid</i>) so it can be found again.<br/>
+<a href="tp_auditor?form.who=$d_actor|u$&amp;form.src=$src|u$&amp;form.time.earliest=$time.earliest|u$&amp;form.time.latest=$time.latest|u$">Open this identity in Auditor Evidence →</a></div></html></panel></row><row><panel><title>Machine and agent activity</title><table><search base="base"><query><![CDATA[
+| search actor_class IN ("ai_agent","workload") event IN ("db.session.start","db.session.query","auth","bot.join","kube.request")
+| eval detail=substr(coalesce(db_query, error, request_path, method), 1, 100)
+| sort - _time
+| table _time actor actor_class event outcome resource detail
+]]></query></search><option name="count">8</option><option name="wrap">true</option><option name="drilldown">none</option><format type="color" field="outcome"><colorPalette type="map">{"allowed":#3FB68B,"denied":#E5534B}</colorPalette></format></table></panel><panel><title>Write-attempt detector</title><table><search base="base"><query><![CDATA[
+| search event="db.session.query"
+| stats count(eval(is_write=1)) as write_attempts, count as total_queries by actor, actor_class
+| sort - write_attempts
+]]></query></search><option name="count">8</option><option name="wrap">true</option><option name="drilldown">none</option><format type="color" field="actor_class"><colorPalette type="map">{"human":#4E9BE0,"ai_agent":#B07CE8,"workload":#3FB6B6,"system":#7A8699}</colorPalette></format></table></panel></row><row><panel><title>Resources touched</title><chart><search base="base"><query><![CDATA[
+| where isnotnull(resource) | chart count over resource by actor_class
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"human":"#4E9BE0","ai_agent":"#B07CE8","workload":"#3FB6B6","system":"#7A8699"}</option></chart></panel><panel><title>Event types</title><chart><search base="base"><query><![CDATA[
+| stats count by event | sort - count | head 12
+]]></query></search><option name="charting.chart">bar</option><option name="charting.legend.placement">none</option></chart></panel></row><row><panel><title>Live event stream (click a row to open the raw event in Search)</title><table><search base="base"><query><![CDATA[
+| sort - _time | head 100 | table _time actor actor_class event outcome code resource src uid
+]]></query></search><option name="count">8</option><option name="wrap">false</option><option name="drilldown">row</option><drilldown><link target="_blank">/en-US/app/search/search?q=search%20$src|u$%20uid%3D%22$row.uid|u$%22&amp;earliest=$time.earliest|u$&amp;latest=$time.latest|u$</link></drilldown></table></panel></row></form>

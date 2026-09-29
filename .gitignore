@@ -15,3 +15,7 @@ demo-data/
 
 # Python bytecode (regenerated automatically)
 __pycache__/
+
+# Splunk app dashboards live in a folder named "data": keep them in Git
+# (the plain "data/" rule above would otherwise hide them).
+!splunk/apps/teleport_lab/default/data/

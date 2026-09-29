@@ -1,0 +1,601 @@
+<dashboard version="2" theme="dark">
+  <label>3 · AI Agent Governance (Studio)</label>
+  <description>Claude decides. Teleport decides what is allowed. Splunk records what happened.</description>
+  <definition><![CDATA[
+{
+  "title": "3 · AI Agent Governance (Studio)",
+  "description": "Claude decides. Teleport decides what is allowed. Splunk records what happened.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-15d@d,now"
+      }
+    },
+    "input_src": {
+      "type": "input.dropdown",
+      "title": "Data source",
+      "options": {
+        "token": "src",
+        "defaultValue": "index=teleport_demo",
+        "items": [
+          {
+            "label": "Demo data (synthetic, 15 days)",
+            "value": "index=teleport_demo"
+          },
+          {
+            "label": "Live lab data",
+            "value": "index=teleport"
+          },
+          {
+            "label": "Both",
+            "value": "(index=teleport OR index=teleport_demo)"
+          }
+        ]
+      }
+    },
+    "input_agent": {
+      "type": "input.text",
+      "title": "Machine identity (name or bot-*)",
+      "options": {
+        "token": "agent",
+        "defaultValue": "bot-*"
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    },
+    "tokens": {
+      "default": {
+        "agent": {
+          "value": "bot-*"
+        },
+        "sel_sid": {
+          "value": "__none__"
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_base": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit\n| eval actor=coalesce(user, 'identity.user', user_name, \"unknown\")\n| eval actor_type=case(like(actor,\"bot-%\"),\"machine\", actor=\"system\",\"system\", like(actor,\"%.localhost\"),\"system\", true(),\"human\")\n| eval actor_class=case(actor_type=\"human\",\"human\", match(actor,\"^bot-(claude|copilot|lab)\"),\"ai_agent\", actor_type=\"machine\",\"workload\", true(),\"system\")\n| eval outcome=if(success=\"false\" OR like(code,\"%W\"),\"denied\",\"allowed\")\n| eval src=coalesce('addr.remote','identity.client_ip')\n| eval src_ip=replace(src,\":\\d+$$\",\"\")\n| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)\n| eval hour_utc=floor((_time%86400)/3600)\n| eval ttl_h=if(event=\"cert.create\", round((strptime(substr('identity.expires',1,19).\"+0000\",\"%Y-%m-%dT%H:%M:%S%z\")-_time)/3600,2), null())\n| eval is_write=if(event=\"db.session.query\" AND match(db_query,\"(?i)^\\s*(create|drop|alter|insert|update|delete|truncate|grant)\"),1,0)\n| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, \"identity.user\", \"identity.roles{}\", \"identity.expires\", \"identity.client_ip\", \"addr.remote\", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "base"
+    },
+    "ds_ag": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search actor=\"$agent$\""
+      }
+    },
+    "k1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| eventstats count(eval(event=\"db.session.start\" AND outcome=\"allowed\")) as total | timechart span=1d count(eval(event=\"db.session.start\" AND outcome=\"allowed\")) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| eventstats count(eval(event=\"db.session.query\" AND is_write=0)) as total | timechart span=1d count(eval(event=\"db.session.query\" AND is_write=0)) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| eventstats count(eval(is_write=1)) as total | timechart span=1d count(eval(is_write=1)) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k4": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| eventstats count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as total | timechart span=1d count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k5": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| search event=\"cert.create\" | stats avg(ttl_h) as h | eval h=round(h,1) | fields h"
+      }
+    },
+    "c1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| search event IN (\"db.session.query\",\"db.session.start\") | eval kind=case(is_write=1,\"write attempt\",event=\"db.session.start\" AND outcome=\"denied\",\"blocked by Teleport\",event=\"db.session.query\",\"read (allowed)\") | where isnotnull(kind) | timechart span=1d count by kind"
+      }
+    },
+    "t1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| stats dc(resource) as resources, values(resource) as reaches, values(db_user) as as_db_user, avg(ttl_h) as avg_cert_hours by actor | eval reaches=mvjoin(mvindex(reaches,0,2),\", \"), as_db_user=mvjoin(mvindex(as_db_user,0,2),\", \"), avg_cert_hours=round(avg_cert_hours,1)"
+      }
+    },
+    "t2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_ag",
+        "query": "| search event IN (\"db.session.start\",\"db.session.query\") | stats min(_time) as started, count(eval(event=\"db.session.query\")) as queries, sum(is_write) as write_attempts, count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as blocked_connects, values(db_user) as db_user by sid, actor | eval verdict=case(blocked_connects>0 AND write_attempts>0,\"Blocked + write attempt\", blocked_connects>0,\"Blocked at Teleport\", write_attempts>0,\"Write attempted\", true(),\"Clean read-only\") | eval sev=case(verdict=\"Blocked + write attempt\",0,verdict=\"Blocked at Teleport\",1,verdict=\"Write attempted\",2,true(),3) | sort 0 sev - started | eval started=strftime(started,\"%Y-%m-%d %H:%M\") | table started actor verdict queries write_attempts blocked_connects db_user sid"
+      }
+    },
+    "t3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search sid=\"$sel_sid$\" | sort 0 _time | eval time=strftime(_time,\"%H:%M:%S\") | table time event db_user db_query outcome"
+      }
+    }
+  },
+  "visualizations": {
+    "v_k1": {
+      "type": "splunk.singlevalue",
+      "title": "AGENT DATABASE SESSIONS",
+      "dataSources": {
+        "primary": "k1"
+      },
+      "options": {
+        "majorColor": "#4E9BE0",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#4E9BE0",
+        "sparklineAreaColor": "#4E9BE0",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k2": {
+      "type": "splunk.singlevalue",
+      "title": "READ QUERIES",
+      "dataSources": {
+        "primary": "k2"
+      },
+      "options": {
+        "majorColor": "#3FB68B",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k3": {
+      "type": "splunk.singlevalue",
+      "title": "WRITE ATTEMPTS",
+      "dataSources": {
+        "primary": "k3"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#F0A030"
+          }
+        ]
+      }
+    },
+    "v_k4": {
+      "type": "splunk.singlevalue",
+      "title": "BLOCKED AT TELEPORT",
+      "dataSources": {
+        "primary": "k4"
+      },
+      "options": {
+        "majorColor": "> majorValue | rangeValue(majorColorCfg)",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#3FB68B",
+        "sparklineAreaColor": "#3FB68B",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      },
+      "context": {
+        "majorColorCfg": [
+          {
+            "to": 1,
+            "value": "#3FB68B"
+          },
+          {
+            "from": 1,
+            "value": "#E5534B"
+          }
+        ]
+      }
+    },
+    "v_k5": {
+      "type": "splunk.singlevalue",
+      "title": "CREDENTIAL LIFETIME (HOURS)",
+      "dataSources": {
+        "primary": "k5"
+      },
+      "options": {
+        "majorColor": "#F0A030",
+        "sparklineDisplay": "off",
+        "trendDisplay": "off",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_c1": {
+      "type": "splunk.column",
+      "title": "Intent vs outcome, per day",
+      "dataSources": {
+        "primary": "c1"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "legendDisplay": "bottom",
+        "stackMode": "stacked",
+        "seriesColorsByField": {
+          "read (allowed)": "#3FB68B",
+          "write attempt": "#F0A030",
+          "blocked by Teleport": "#E5534B"
+        }
+      }
+    },
+    "v_t1": {
+      "type": "splunk.table",
+      "title": "Blast radius: what can each identity reach?",
+      "dataSources": {
+        "primary": "t1"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_t2": {
+      "type": "splunk.table",
+      "title": "Agent sessions: risky first (click a row to replay it)",
+      "dataSources": {
+        "primary": "t2"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true,
+        "columnFormat": {
+          "verdict": {
+            "rowBackgroundColors": "> table | seriesByName(\"verdict\") | matchValue(verdictBg)"
+          }
+        }
+      },
+      "context": {
+        "verdictBg": [
+          {
+            "match": "Clean read-only",
+            "value": "#1F6B4A"
+          },
+          {
+            "match": "Write attempted",
+            "value": "#7A5A1A"
+          },
+          {
+            "match": "Blocked at Teleport",
+            "value": "#7A2B27"
+          },
+          {
+            "match": "Blocked + write attempt",
+            "value": "#7A2B27"
+          }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "sel_sid",
+                "key": "row.sid.value"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_t3": {
+      "type": "splunk.table",
+      "title": "Session replay: exactly what this session ran",
+      "dataSources": {
+        "primary": "t3"
+      },
+      "options": {
+        "count": 8,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_n": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "**Say it like this:** Claude decides. Teleport decides what Claude is allowed to do. Splunk records what actually happened. The agent has its own machine identity (not a human admin), a read-only role, and a credential that lives about an hour.  \n*Honest detail:* a write attempt shown as allowed means Teleport forwarded and logged the query; the read-only database user is what refuses the change. Teleport itself blocks the request when the agent asks for a database user its role does not allow (the red rows)."
+      }
+    },
+    "v_l1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ①  What the agent tried, and what happened",
+        "fontColor": "#B07CE8",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_l2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ②  Every session: click one to replay it",
+        "fontColor": "#F0A030",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_l3": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ③  The replay, then how to say it",
+        "fontColor": "#3FB68B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_bar": {
+      "type": "splunk.rectangle",
+      "options": {
+        "fillColor": "#B07CE8",
+        "strokeColor": "#B07CE8",
+        "rx": 4
+      }
+    },
+    "v_h1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# Scene 3: AI agent governance. Claude decides. Teleport decides. Splunk proves.",
+        "fontColor": "#FFFFFF",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_h2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "A separate machine identity, a read-only role, a one-hour credential, and every attempt on the record.",
+        "fontColor": "#9FB3CC",
+        "backgroundColor": "transparent"
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1920,
+      "height": 1700,
+      "display": "auto-scale",
+      "backgroundColor": "#0B0F17"
+    },
+    "structure": [
+      {
+        "item": "v_bar",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 30,
+          "w": 10,
+          "h": 86
+        }
+      },
+      {
+        "item": "v_h1",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 24,
+          "w": 1750,
+          "h": 56
+        }
+      },
+      {
+        "item": "v_h2",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 82,
+          "w": 1750,
+          "h": 34
+        }
+      },
+      {
+        "item": "v_k1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 140,
+          "w": 350,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k2",
+        "type": "block",
+        "position": {
+          "x": 412,
+          "y": 140,
+          "w": 350,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k3",
+        "type": "block",
+        "position": {
+          "x": 784,
+          "y": 140,
+          "w": 350,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k4",
+        "type": "block",
+        "position": {
+          "x": 1156,
+          "y": 140,
+          "w": 350,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k5",
+        "type": "block",
+        "position": {
+          "x": 1528,
+          "y": 140,
+          "w": 350,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_l1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 350,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_l2",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 800,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_l3",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1170,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_c1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 392,
+          "w": 1000,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_t1",
+        "type": "block",
+        "position": {
+          "x": 1062,
+          "y": 392,
+          "w": 818,
+          "h": 380
+        }
+      },
+      {
+        "item": "v_t2",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 842,
+          "w": 1840,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_t3",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1212,
+          "w": 1840,
+          "h": 300
+        }
+      },
+      {
+        "item": "v_n",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1532,
+          "w": 1840,
+          "h": 130
+        }
+      }
+    ],
+    "globalInputs": [
+      "input_time",
+      "input_src",
+      "input_agent"
+    ]
+  }
+}
+]]></definition>
+  <meta type="hiddenElements"><![CDATA[{"hideEdit": false, "hideOpenInSearch": false, "hideExport": false}]]></meta>
+</dashboard>

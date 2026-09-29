@@ -1,0 +1,40 @@
+<form version="1.1" theme="dark"><label>0 · Trust Scorecard</label><description>Executive view: are credentials short-lived, is every action attributed, and what did policy block? (Demo data is synthetic.)</description><fieldset submitButton="false" autoRun="true"><input type="time" token="time"><label>Time range</label><default><earliest>-15d@d</earliest><latest>now</latest></default></input><input type="dropdown" token="src"><label>Data source</label><choice value="index=teleport_demo">Demo data (synthetic, 15 days)</choice><choice value="index=teleport">Live lab data</choice><choice value="(index=teleport OR index=teleport_demo)">Both</choice><default>index=teleport_demo</default><initialValue>index=teleport_demo</initialValue></input></fieldset><search id="base"><query><![CDATA[
+$src$ sourcetype=teleport:audit
+| eval actor=coalesce(user, 'identity.user', user_name, "unknown")
+| eval actor_type=case(like(actor,"bot-%"),"machine", actor="system","system", like(actor,"%.localhost"),"system", true(),"human")
+| eval actor_class=case(actor_type="human","human", match(actor,"^bot-(claude|copilot|lab)"),"ai_agent", actor_type="machine","workload", true(),"system")
+| eval outcome=if(success="false" OR like(code,"%W"),"denied","allowed")
+| eval src=coalesce('addr.remote','identity.client_ip')
+| eval src_ip=replace(src,":\d+$$","")
+| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)
+| eval hour_utc=floor((_time%86400)/3600)
+| eval ttl_h=if(event="cert.create", round((strptime(substr('identity.expires',1,19)."+0000","%Y-%m-%dT%H:%M:%S%z")-_time)/3600,2), null())
+| eval is_write=if(event="db.session.query" AND match(db_query,"(?i)^\s*(create|drop|alter|insert|update|delete|truncate|grant)"),1,0)
+| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, "identity.user", "identity.roles{}", "identity.expires", "identity.client_ip", "addr.remote", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write
+
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><row><panel><title>Credentials issued</title><single><search base="base"><query><![CDATA[
+| search event="cert.create" | stats count
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Short-lived (12h or less)</title><single><search base="base"><query><![CDATA[
+| search event="cert.create" | stats count as certs, count(eval(ttl_h<=12)) as short | eval pct=if(certs>0, round(short/certs*100,1), 0) | fields pct
+]]></query></search><option name="drilldown">none</option><option name="unit">%</option><option name="colorMode">none</option></single></panel><panel><title>Long-lived credentials (over 24h)</title><single><search base="base"><query><![CDATA[
+| search event="cert.create" | stats count(eval(ttl_h>24)) as long_lived
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xE5534B"]</option></single></panel><panel><title>Average credential lifetime</title><single><search base="base"><query><![CDATA[
+| search event="cert.create" | stats avg(ttl_h) as h | eval h=round(h,1) | fields h
+]]></query></search><option name="drilldown">none</option><option name="unit">hours</option><option name="colorMode">none</option></single></panel><panel><title>Actions blocked by policy</title><single><search base="base"><query><![CDATA[
+| where outcome="denied" | stats count
+]]></query></search><option name="drilldown">none</option><option name="useColors">1</option><option name="colorBy">value</option><option name="rangeValues">[0]</option><option name="rangeColors">["0x3FB68B","0xF0A030"]</option></single></panel><panel><title>Machine share of activity</title><single><search base="base"><query><![CDATA[
+| stats count as total, count(eval(actor_type="machine")) as m | eval pct=if(total>0, round(m/total*100,0), 0) | fields pct
+]]></query></search><option name="drilldown">none</option><option name="unit">%</option><option name="colorMode">none</option></single></panel></row><row><panel><title>Credentials issued per day: people vs machines</title><chart><search base="base"><query><![CDATA[
+| search event="cert.create" | timechart span=1d count by actor_type
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{"human":"#4E9BE0","machine":"#B07CE8","system":"#7A8699"}</option></chart></panel><panel><title>Average credential lifetime (hours)</title><chart><search base="base"><query><![CDATA[
+| search event="cert.create" | stats avg(ttl_h) as avg_hours by actor_type | eval avg_hours=round(avg_hours,2)
+]]></query></search><option name="charting.chart">bar</option><option name="charting.legend.placement">none</option><option name="charting.fieldColors">{"human":"#4E9BE0","machine":"#B07CE8","system":"#7A8699"}</option></chart></panel></row><row><panel><title>Blocked by policy, per day</title><chart><search base="base"><query><![CDATA[
+| where outcome="denied" | timechart span=1d count by event
+]]></query></search><option name="charting.chart">column</option><option name="charting.legend.placement">bottom</option><option name="charting.chart.stackMode">stacked</option><option name="charting.fieldColors">{}</option></chart></panel><panel><title>What was blocked, and why</title><table><search base="base"><query><![CDATA[
+| where outcome="denied" | eval reason=substr(error,1,95) | stats count by actor, event, reason | sort - count
+]]></query></search><option name="count">6</option><option name="wrap">true</option><option name="drilldown">none</option></table></panel></row><row><panel><title>How to read this page</title><html>
+<div style="display:flex;gap:28px;flex-wrap:wrap;line-height:1.5">
+ <div style="flex:1;min-width:260px"><b>Before (PPI Financial Services, customer story)</b><br/>Manual certificate management, complex onboarding, fragmented access workflows.</div>
+ <div style="flex:1;min-width:260px"><b>After</b><br/>Single sign-on, short-lived access, every session audited, access policy managed as code (Kubernetes operator + Terraform).</div>
+ <div style="flex:1;min-width:260px"><b>What this lab shows</b><br/>The same idea for humans <i>and</i> machines <i>and</i> AI agents: credentials that expire in hours, each action tied to an identity, denials recorded. Source for the PPI FS points: Teleport customer story.</div>
+</div></html></panel></row></form>

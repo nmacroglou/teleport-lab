@@ -1,0 +1,20 @@
+<nav search_view="search">
+  <view name="tp_scorecard" default="true" />
+  <view name="tp_studio_scorecard" />
+  <view name="tp_identity" />
+  <view name="tp_studio_identity" />
+  <collection label="Demo scenes (Studio)">
+    <view name="tp_studio_onboarding" />
+    <view name="tp_studio_auditor" />
+    <view name="tp_studio_agent" />
+    <view name="tp_studio_security" />
+  </collection>
+  <collection label="Demo scenes (classic)">
+    <view name="tp_onboarding" />
+    <view name="tp_auditor" />
+    <view name="tp_agent" />
+    <view name="tp_security" />
+  </collection>
+  <view name="teleport_overview" />
+  <view name="search" />
+</nav>

@@ -1,0 +1,34 @@
+<form version="1.1" theme="dark"><label>1 · Day-One Onboarding</label><description>Scene 1: a new engineer goes from no account to working access. No certificate files, no ticket queue.</description><fieldset submitButton="false" autoRun="true"><input type="time" token="time"><label>Time range</label><default><earliest>-15d@d</earliest><latest>now</latest></default></input><input type="dropdown" token="src"><label>Data source</label><choice value="index=teleport_demo">Demo data (synthetic, 15 days)</choice><choice value="index=teleport">Live lab data</choice><choice value="(index=teleport OR index=teleport_demo)">Both</choice><default>index=teleport_demo</default><initialValue>index=teleport_demo</initialValue></input><input type="dropdown" token="newhire"><label>New hire</label><choice value="*">All new hires</choice><default>*</default><initialValue>*</initialValue><fieldForLabel>name</fieldForLabel><fieldForValue>name</fieldForValue><search><query>$src$ sourcetype=teleport:audit event="user.create" | stats count by name</query><earliest>-30d@d</earliest><latest>now</latest></search></input></fieldset><search id="base"><query><![CDATA[
+$src$ sourcetype=teleport:audit
+| eval actor=coalesce(user, 'identity.user', user_name, "unknown")
+| eval actor_type=case(like(actor,"bot-%"),"machine", actor="system","system", like(actor,"%.localhost"),"system", true(),"human")
+| eval actor_class=case(actor_type="human","human", match(actor,"^bot-(claude|copilot|lab)"),"ai_agent", actor_type="machine","workload", true(),"system")
+| eval outcome=if(success="false" OR like(code,"%W"),"denied","allowed")
+| eval src=coalesce('addr.remote','identity.client_ip')
+| eval src_ip=replace(src,":\d+$$","")
+| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)
+| eval hour_utc=floor((_time%86400)/3600)
+| eval ttl_h=if(event="cert.create", round((strptime(substr('identity.expires',1,19)."+0000","%Y-%m-%dT%H:%M:%S%z")-_time)/3600,2), null())
+| eval is_write=if(event="db.session.query" AND match(db_query,"(?i)^\s*(create|drop|alter|insert|update|delete|truncate|grant)"),1,0)
+| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, "identity.user", "identity.roles{}", "identity.expires", "identity.client_ip", "addr.remote", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write
+| eval subject=if(in(event,"user.create","reset_password_token.create"), name, actor)
+| eventstats count(eval(event="user.create")) as is_new by subject
+| where is_new>0 AND subject!="bot-terraform"
+| search subject="$newhire$"
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><row><panel><title>New engineers onboarded</title><single><search base="base"><query><![CDATA[
+| stats dc(subject) as hires
+]]></query></search><option name="drilldown">none</option><option name="colorMode">none</option></single></panel><panel><title>Minutes: account created to first access</title><single><search base="base"><query><![CDATA[
+| stats min(eval(if(event="user.create",_time,null()))) as created, min(eval(if(in(event,"session.start","db.session.start","app.session.start"),_time,null()))) as first_access by subject | eval minutes=round((first_access-created)/60,1) | stats avg(minutes) as m | eval m=round(m,1) | fields m
+]]></query></search><option name="drilldown">none</option><option name="unit">min</option><option name="colorMode">none</option></single></panel><panel><title>Logins protected by MFA</title><single><search base="base"><query><![CDATA[
+| search event="user.login" success="true" | stats count(eval(isnotnull(mfa_device))) as with_mfa, count as total | eval pct=if(total>0, round(with_mfa/total*100,0), 0) | fields pct
+]]></query></search><option name="drilldown">none</option><option name="unit">%</option><option name="colorMode">none</option></single></panel></row><row><panel><title>The journey, step by step</title><table><search base="base"><query><![CDATA[
+| where in(event,"user.create","reset_password_token.create","mfa.add","user.login","cert.create","session.start","db.session.start","app.session.start") | eval step=case(event="user.create","1 Account created (as code)",event="reset_password_token.create","2 Invite issued",event="mfa.add","3 MFA enrolled",event="user.login","4 First login",event="cert.create","5 Short-lived certificate issued",event="session.start","6 SSH access",event="db.session.start","6 Database access",event="app.session.start","6 App access") | where isnotnull(step) | sort 0 subject _time | table _time subject step outcome
+]]></query></search><option name="count">12</option><option name="wrap">false</option><option name="drilldown">none</option></table></panel><panel><title>Roles handed out (certificates by role)</title><chart><search base="base"><query><![CDATA[
+| search event="cert.create" | rename "identity.roles{}" as role | stats count by role
+]]></query></search><option name="charting.chart">pie</option><option name="charting.legend.placement">right</option></chart></panel></row><row><panel><title>Access as code: role and user changes</title><table><search><query><![CDATA[
+$src$ sourcetype=teleport:audit event IN ("role.created","user.create","user.update") | sort - _time | eval by=user | table _time by event name roles
+]]></query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><option name="count">8</option><option name="drilldown">none</option></table></panel><panel><title>The old way vs the Teleport way</title><html>
+<div style="display:flex;gap:28px;flex-wrap:wrap;line-height:1.6">
+ <div style="flex:1;min-width:280px"><b>The old way</b><ol><li>Open a ticket</li><li>Wait for someone to create keys or certificates</li><li>Copy files to the laptop, keep them safe forever</li><li>Ask again for each new system</li></ol></div>
+ <div style="flex:1;min-width:280px"><b>The Teleport way</b><ol><li>Account and role created <i>as code</i> (Terraform / operator)</li><li>Engineer logs in once with SSO/MFA</li><li>Short-lived certificate is issued automatically</li><li>Access matches the role; every session is audited</li></ol></div>
+</div></html></panel></row></form>

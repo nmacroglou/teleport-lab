@@ -1,0 +1,460 @@
+<dashboard version="2" theme="dark">
+  <label>1 · Day-One Onboarding (Studio)</label>
+  <description>A new engineer goes from no account to working access.</description>
+  <definition><![CDATA[
+{
+  "title": "1 · Day-One Onboarding (Studio)",
+  "description": "A new engineer goes from no account to working access.",
+  "inputs": {
+    "input_time": {
+      "type": "input.timerange",
+      "title": "Time range",
+      "options": {
+        "token": "global_time",
+        "defaultValue": "-15d@d,now"
+      }
+    },
+    "input_src": {
+      "type": "input.dropdown",
+      "title": "Data source",
+      "options": {
+        "token": "src",
+        "defaultValue": "index=teleport_demo",
+        "items": [
+          {
+            "label": "Demo data (synthetic, 15 days)",
+            "value": "index=teleport_demo"
+          },
+          {
+            "label": "Live lab data",
+            "value": "index=teleport"
+          },
+          {
+            "label": "Both",
+            "value": "(index=teleport OR index=teleport_demo)"
+          }
+        ]
+      }
+    },
+    "input_hire": {
+      "type": "input.text",
+      "title": "New hire (name or *)",
+      "options": {
+        "token": "newhire",
+        "defaultValue": "*"
+      }
+    }
+  },
+  "defaults": {
+    "dataSources": {
+      "ds.search": {
+        "options": {
+          "queryParameters": {
+            "earliest": "$global_time.earliest$",
+            "latest": "$global_time.latest$"
+          }
+        }
+      }
+    },
+    "tokens": {
+      "default": {
+        "newhire": {
+          "value": "*"
+        }
+      }
+    }
+  },
+  "dataSources": {
+    "ds_base": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit\n| eval actor=coalesce(user, 'identity.user', user_name, \"unknown\")\n| eval actor_type=case(like(actor,\"bot-%\"),\"machine\", actor=\"system\",\"system\", like(actor,\"%.localhost\"),\"system\", true(),\"human\")\n| eval actor_class=case(actor_type=\"human\",\"human\", match(actor,\"^bot-(claude|copilot|lab)\"),\"ai_agent\", actor_type=\"machine\",\"workload\", true(),\"system\")\n| eval outcome=if(success=\"false\" OR like(code,\"%W\"),\"denied\",\"allowed\")\n| eval src=coalesce('addr.remote','identity.client_ip')\n| eval src_ip=replace(src,\":\\d+$$\",\"\")\n| eval resource=coalesce(db_service, app_name, server_hostname, kubernetes_cluster)\n| eval hour_utc=floor((_time%86400)/3600)\n| eval ttl_h=if(event=\"cert.create\", round((strptime(substr('identity.expires',1,19).\"+0000\",\"%Y-%m-%dT%H:%M:%S%z\")-_time)/3600,2), null())\n| eval is_write=if(event=\"db.session.query\" AND match(db_query,\"(?i)^\\s*(create|drop|alter|insert|update|delete|truncate|grant)\"),1,0)\n| fields _time, event, code, user, success, error, method, mfa_device, name, roles, login, sid, uid, db_service, db_name, db_user, db_query, app_name, server_hostname, kubernetes_cluster, verb, request_path, response_code, bot_name, user_name, \"identity.user\", \"identity.roles{}\", \"identity.expires\", \"identity.client_ip\", \"addr.remote\", demo, actor, actor_type, actor_class, outcome, src, src_ip, resource, hour_utc, ttl_h, is_write",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "base"
+    },
+    "ds_onb": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| eval subject=if(in(event,\"user.create\",\"reset_password_token.create\"), name, actor)\n| eventstats count(eval(event=\"user.create\")) as is_new by subject\n| where is_new>0 AND subject!=\"bot-terraform\"\n| search subject=\"$newhire$\""
+      }
+    },
+    "k1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_onb",
+        "query": "| eventstats dc(subject) as total | timechart span=1d dc(subject) as events, first(total) as total | eventstats max(total) as total"
+      }
+    },
+    "k2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_onb",
+        "query": "| stats min(eval(if(event=\"user.create\",_time,null()))) as created, min(eval(if(in(event,\"session.start\",\"db.session.start\",\"app.session.start\"),_time,null()))) as first_access by subject | eval minutes=round((first_access-created)/60,1) | stats avg(minutes) as m | eval m=round(m,1) | fields m"
+      }
+    },
+    "k3": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"user.login\" success=\"true\" | stats count(eval(isnotnull(mfa_device))) as w, count as t | eval pct=if(t>0,round(w/t*100,0),0) | fields pct"
+      }
+    },
+    "t1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_onb",
+        "query": "| where in(event,\"user.create\",\"reset_password_token.create\",\"mfa.add\",\"user.login\",\"cert.create\",\"session.start\",\"db.session.start\",\"app.session.start\") | eval step=case(event=\"user.create\",\"1 Account created (as code)\",event=\"reset_password_token.create\",\"2 Invite issued\",event=\"mfa.add\",\"3 MFA enrolled\",event=\"user.login\",\"4 First login\",event=\"cert.create\",\"5 Short-lived certificate issued\",event=\"session.start\",\"6 SSH access\",event=\"db.session.start\",\"6 Database access\",event=\"app.session.start\",\"6 App access\") | where isnotnull(step) | sort 0 subject _time | eval time=strftime(_time,\"%Y-%m-%d %H:%M\") | table time subject step outcome"
+      }
+    },
+    "p1": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event=\"cert.create\" | rename \"identity.roles{}\" as role | stats count by role"
+      }
+    },
+    "t2": {
+      "type": "ds.chain",
+      "options": {
+        "extend": "ds_base",
+        "query": "| search event IN (\"role.created\",\"user.create\",\"user.update\") | sort - _time | eval when=strftime(_time,\"%Y-%m-%d %H:%M\"), by=actor | table when by event name roles"
+      }
+    }
+  },
+  "visualizations": {
+    "v_k1": {
+      "type": "splunk.singlevalue",
+      "title": "NEW ENGINEERS ONBOARDED",
+      "dataSources": {
+        "primary": "k1"
+      },
+      "options": {
+        "majorColor": "#4E9BE0",
+        "sparklineDisplay": "below",
+        "trendDisplay": "off",
+        "majorValue": "> primary | seriesByName('total') | lastPoint()",
+        "sparklineValues": "> primary | seriesByName('events')",
+        "showSparklineAreaGraph": true,
+        "sparklineStrokeColor": "#4E9BE0",
+        "sparklineAreaColor": "#4E9BE0",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56
+      }
+    },
+    "v_k2": {
+      "type": "splunk.singlevalue",
+      "title": "MINUTES: ACCOUNT TO FIRST ACCESS",
+      "dataSources": {
+        "primary": "k2"
+      },
+      "options": {
+        "majorColor": "#F0A030",
+        "sparklineDisplay": "off",
+        "trendDisplay": "off",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56,
+        "unit": "min"
+      }
+    },
+    "v_k3": {
+      "type": "splunk.singlevalue",
+      "title": "LOGINS PROTECTED BY MFA",
+      "dataSources": {
+        "primary": "k3"
+      },
+      "options": {
+        "majorColor": "#3FB68B",
+        "sparklineDisplay": "off",
+        "trendDisplay": "off",
+        "backgroundColor": "#141B27",
+        "majorFontSize": 56,
+        "unit": "%"
+      }
+    },
+    "v_t1": {
+      "type": "splunk.table",
+      "title": "The journey, step by step",
+      "dataSources": {
+        "primary": "t1"
+      },
+      "options": {
+        "count": 8,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true,
+        "columnFormat": {
+          "outcome": {
+            "rowBackgroundColors": "> table | seriesByName(\"outcome\") | matchValue(outcomeBg)"
+          }
+        }
+      },
+      "context": {
+        "outcomeBg": [
+          {
+            "match": "allowed",
+            "value": "#1F6B4A"
+          },
+          {
+            "match": "denied",
+            "value": "#7A2B27"
+          }
+        ]
+      }
+    },
+    "v_p1": {
+      "type": "splunk.pie",
+      "title": "Roles handed out (certificates by role)",
+      "dataSources": {
+        "primary": "p1"
+      },
+      "options": {
+        "backgroundColor": "#141B27",
+        "showDonutHole": true,
+        "collapseThreshold": 0
+      }
+    },
+    "v_t2": {
+      "type": "splunk.table",
+      "title": "Access as code: role and user changes",
+      "dataSources": {
+        "primary": "t2"
+      },
+      "options": {
+        "count": 6,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true
+      }
+    },
+    "v_o1": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### The old way\n1. Open a ticket\n2. Wait for someone to create keys or certificates\n3. Copy files to the laptop and keep them safe forever\n4. Ask again for each new system"
+      }
+    },
+    "v_o2": {
+      "type": "splunk.markdown",
+      "options": {
+        "backgroundColor": "#141B27",
+        "fontColor": "#E6EDF7",
+        "markdown": "### The Teleport way\n1. Account and role created **as code** (Terraform or the Kubernetes operator)\n2. Engineer logs in once with SSO and MFA\n3. A short-lived certificate is issued automatically\n4. Access matches the role; every session is audited"
+      }
+    },
+    "v_c1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ①  The journey: no account to working access",
+        "fontColor": "#4E9BE0",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_c2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ②  Which roles were handed out",
+        "fontColor": "#B07CE8",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_c3": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ③  Old way vs Teleport way, and the trail it leaves",
+        "fontColor": "#3FB68B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_bar": {
+      "type": "splunk.rectangle",
+      "options": {
+        "fillColor": "#4E9BE0",
+        "strokeColor": "#4E9BE0",
+        "rx": 4
+      }
+    },
+    "v_h1": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "# Scene 1: day-one onboarding. No ticket queue, no certificate files.",
+        "fontColor": "#FFFFFF",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_h2": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "A new engineer goes from nothing to working access in minutes, with short-lived certificates and a full audit trail.",
+        "fontColor": "#9FB3CC",
+        "backgroundColor": "transparent"
+      }
+    }
+  },
+  "layout": {
+    "type": "absolute",
+    "options": {
+      "width": 1920,
+      "height": 1220,
+      "display": "auto-scale",
+      "backgroundColor": "#0B0F17"
+    },
+    "structure": [
+      {
+        "item": "v_bar",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 30,
+          "w": 10,
+          "h": 86
+        }
+      },
+      {
+        "item": "v_h1",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 24,
+          "w": 1750,
+          "h": 56
+        }
+      },
+      {
+        "item": "v_h2",
+        "type": "block",
+        "position": {
+          "x": 68,
+          "y": 82,
+          "w": 1750,
+          "h": 34
+        }
+      },
+      {
+        "item": "v_k1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 140,
+          "w": 598,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k2",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 140,
+          "w": 598,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_k3",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 140,
+          "w": 598,
+          "h": 190
+        }
+      },
+      {
+        "item": "v_c1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 350,
+          "w": 1100,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_c2",
+        "type": "block",
+        "position": {
+          "x": 1162,
+          "y": 350,
+          "w": 718,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_t1",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 392,
+          "w": 1100,
+          "h": 400
+        }
+      },
+      {
+        "item": "v_p1",
+        "type": "block",
+        "position": {
+          "x": 1162,
+          "y": 392,
+          "w": 718,
+          "h": 400
+        }
+      },
+      {
+        "item": "v_c3",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 820,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
+        "item": "v_t2",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 862,
+          "w": 598,
+          "h": 320
+        }
+      },
+      {
+        "item": "v_o1",
+        "type": "block",
+        "position": {
+          "x": 660,
+          "y": 862,
+          "w": 598,
+          "h": 320
+        }
+      },
+      {
+        "item": "v_o2",
+        "type": "block",
+        "position": {
+          "x": 1280,
+          "y": 862,
+          "w": 598,
+          "h": 320
+        }
+      }
+    ],
+    "globalInputs": [
+      "input_time",
+      "input_src",
+      "input_hire"
+    ]
+  }
+}
+]]></definition>
+  <meta type="hiddenElements"><![CDATA[{"hideEdit": false, "hideOpenInSearch": false, "hideExport": false}]]></meta>
+</dashboard>
