@@ -29,8 +29,11 @@ proxy_service:
   enabled: true
   web_listen_addr: 0.0.0.0:3080
   public_addr: localhost:3080
-  # No cert files: Teleport uses a self-signed certificate for now.
-  # We move to trusted TLS in build step 10.
+  # Certificate from the local mkcert CA (trusted by this Mac's Keychain).
+  # Covers localhost and whoami.localhost; reissue it when adding apps.
+  https_keypairs:
+    - key_file: /etc/teleport-tls/teleport.key
+      cert_file: /etc/teleport-tls/teleport.crt
 
 ssh_service:
   enabled: false

@@ -5,11 +5,12 @@ services:
     hostname: localhost
     restart: unless-stopped
     environment:
-      # Trust Teleport's own self-signed cert so the app service's reverse
-      # tunnel to localhost:3080 verifies. Remove when we move to trusted TLS.
-      SSL_CERT_FILE: /var/lib/teleport/webproxy_cert.pem
+      # Trust the local mkcert CA (public cert only) so the app service's
+      # reverse tunnel to localhost:3080 verifies the proxy certificate.
+      SSL_CERT_FILE: /etc/teleport-tls/mkcert-rootCA.pem
     volumes:
       - ./config:/etc/teleport:ro
+      - ./secrets/tls:/etc/teleport-tls:ro
       - ./data:/var/lib/teleport
     ports:
       # Bound to 127.0.0.1 so the lab is only reachable from this Mac.
