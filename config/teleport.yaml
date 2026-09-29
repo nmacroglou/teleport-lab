@@ -1,0 +1,55 @@
+version: v3
+teleport:
+  nodename: teleport
+  data_dir: /var/lib/teleport
+  # Storage uses Teleport's defaults (host folder ./data):
+  #   cluster state (users, roles, tokens): /var/lib/teleport/backend/sqlite.db
+  #   audit events (JSON, one file per day): /var/lib/teleport/log/<auth-server-id>/
+  #   session recordings:                    /var/lib/teleport/log/records/
+  # Note: setting storage.audit_events_uri to file:///var/lib/teleport/log
+  # changes the folder layout and hides existing events, so leave it unset.
+  log:
+    output: stderr
+    severity: INFO
+    format:
+      output: text
+
+# Off: Docker Desktop's shared Mac folders can't re-bind a leftover
+# debug.sock after the container is recreated, which crashes Teleport.
+debug_service:
+  enabled: false
+
+auth_service:
+  enabled: true
+  cluster_name: localhost
+  listen_addr: 0.0.0.0:3025
+  proxy_listener_mode: multiplex
+
+proxy_service:
+  enabled: true
+  web_listen_addr: 0.0.0.0:3080
+  public_addr: localhost:3080
+  # No cert files: Teleport uses a self-signed certificate for now.
+  # We move to trusted TLS in build step 10.
+
+ssh_service:
+  enabled: false
+
+app_service:
+  enabled: true
+  apps:
+    - name: whoami
+      description: Test web app that echoes request details
+      uri: http://whoami:80
+      labels:
+        env: lab
+
+db_service:
+  enabled: true
+  databases:
+    - name: lab-postgres
+      description: Lab PostgreSQL (read-only user labreader)
+      protocol: postgres
+      uri: postgres:5432
+      static_labels:
+        env: lab

@@ -1,0 +1,28 @@
+version: v3
+teleport:
+  nodename: linux-server-1
+  data_dir: /var/lib/teleport
+  auth_server: teleport:3025
+  join_params:
+    method: token
+    # Path to a file holding the join token (kept out of Git).
+    token_name: /etc/teleport-secrets/node-join-token
+  # Public fingerprint of the cluster CA, so the agent only joins our cluster.
+  ca_pin: "sha256:7b04b6bf416392796236cecdf35cba9b3fd2c47af662ddcc7ff731314cd9c8c1"
+  log:
+    output: stderr
+    severity: INFO
+    format:
+      output: text
+
+auth_service:
+  enabled: false
+
+proxy_service:
+  enabled: false
+
+ssh_service:
+  enabled: true
+  labels:
+    env: lab
+    role: test-server

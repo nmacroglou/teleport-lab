@@ -1,0 +1,88 @@
+services:
+  teleport:
+    image: public.ecr.aws/gravitational/teleport-distroless:18.11.2
+    container_name: teleport
+    hostname: localhost
+    restart: unless-stopped
+    environment:
+      # Trust Teleport's own self-signed cert so the app service's reverse
+      # tunnel to localhost:3080 verifies. Remove when we move to trusted TLS.
+      SSL_CERT_FILE: /var/lib/teleport/webproxy_cert.pem
+    volumes:
+      - ./config:/etc/teleport:ro
+      - ./data:/var/lib/teleport
+    ports:
+      # Bound to 127.0.0.1 so the lab is only reachable from this Mac.
+      - "127.0.0.1:3080:3080" # Web UI and API (proxy)
+      - "127.0.0.1:3025:3025" # Auth service
+      - "127.0.0.1:3023:3023" # SSH proxy
+      - "127.0.0.1:3024:3024" # Reverse tunnel
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/tctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  linux-server-1:
+    build: ./node
+    container_name: linux-server-1
+    hostname: linux-server-1
+    restart: unless-stopped
+    depends_on:
+      teleport:
+        condition: service_healthy
+    volumes:
+      - ./node/teleport.yaml:/etc/teleport/teleport.yaml:ro
+      - ./secrets/node-join-token:/etc/teleport-secrets/node-join-token:ro
+      - ./node/data:/var/lib/teleport
+    # No ports published: this server is only reachable through Teleport.
+
+  whoami:
+    image: traefik/whoami:v1.10.3
+    container_name: whoami
+    restart: unless-stopped
+    # No ports published: this app is only reachable through Teleport.
+
+  postgres:
+    image: postgres:17.11
+    container_name: postgres
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD_FILE: /var/lib/postgresql/secrets/superuser-password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      # Teleport-issued server cert/key and client CA (from tctl auth sign).
+      - ./data/db-certs:/src/certs:ro
+      - ./secrets/postgres-superuser-password:/src/superuser-password:ro
+    # PostgreSQL refuses keys it doesn't own with strict permissions, which
+    # Mac bind mounts can't provide, so copy them in before starting.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        install -d -o postgres -g postgres -m 700 /var/lib/postgresql/certs /var/lib/postgresql/secrets
+        install -o postgres -g postgres -m 600 /src/certs/server.crt /src/certs/server.key /src/certs/server.cas /var/lib/postgresql/certs/
+        install -o postgres -g postgres -m 600 /src/superuser-password /var/lib/postgresql/secrets/superuser-password
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/certs/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/certs/server.key
+      - -c
+      - ssl_ca_file=/var/lib/postgresql/certs/server.cas
+    # No ports published: this database is only reachable through Teleport.
+
+volumes:
+  pgdata:

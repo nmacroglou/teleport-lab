@@ -1,0 +1,5 @@
+# Teleport state: contains private keys and the cluster database.
+data/
+
+# Join tokens and other secrets.
+secrets/
