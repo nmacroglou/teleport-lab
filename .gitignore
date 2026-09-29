@@ -9,3 +9,9 @@ bin/
 
 # tbot output certificates (short-lived credentials).
 tbot/out/
+
+# Synthetic demo data (regenerate with scripts/gen_demo_events.py)
+demo-data/
+
+# Python bytecode (regenerated automatically)
+__pycache__/

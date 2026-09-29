@@ -121,6 +121,8 @@ services:
       - ./splunk/apps/teleport_lab:/opt/splunk/etc/apps/teleport_lab:ro
       # Teleport audit events only (not session recordings or keys).
       - ./data/log/e2043aaa-4782-4dbb-b4fa-15f6cd833dea:/teleport-audit:ro
+      # SYNTHETIC demo events only (index=teleport_demo).
+      - ./demo-data:/teleport-demo:ro
     ports:
       # Bound to 127.0.0.1 so Splunk Web is only reachable from this Mac.
       - "127.0.0.1:8000:8000"

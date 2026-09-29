@@ -1,0 +1,4 @@
+# Share this app's dashboards and searches with everyone who can log in.
+[]
+access = read : [ * ], write : [ admin ]
+export = system
