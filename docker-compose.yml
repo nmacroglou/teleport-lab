@@ -96,12 +96,19 @@ services:
       # Accepts the Splunk General Terms (approved by the lab owner).
       SPLUNK_START_ARGS: --accept-license
       SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      # Skip the startup chown of /opt/splunk: it retries forever on the
+      # read-only app mount. The first boot already set ownership.
+      SPLUNK_HOME_OWNERSHIP_ENFORCEMENT: "false"
     # SPLUNK_PASSWORD (admin) lives in a git-ignored file.
     env_file:
       - ./secrets/splunk.env
     volumes:
       - splunk-etc:/opt/splunk/etc
       - splunk-var:/opt/splunk/var
+      # Lab app: teleport index, audit input, token masking.
+      - ./splunk/apps/teleport_lab:/opt/splunk/etc/apps/teleport_lab:ro
+      # Teleport audit events only (not session recordings or keys).
+      - ./data/log/e2043aaa-4782-4dbb-b4fa-15f6cd833dea:/teleport-audit:ro
     ports:
       # Bound to 127.0.0.1 so Splunk Web is only reachable from this Mac.
       - "127.0.0.1:8000:8000"
