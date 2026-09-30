@@ -95,13 +95,15 @@ postgres/                 Init SQL (read-only role) and pg_hba.conf
 tbot/                     tbot (Machine ID) config, macOS launch agent
 splunk/apps/teleport_lab/ Splunk app: indexes, inputs, props, dashboards
 scripts/                  Dashboard builders, demo data, demo helpers
-docs/                     Architecture, security, setup, dashboards, runbook
+docs/                     Architecture, security, setup, dashboards, runbook, build clock
 .mcp.json                 Claude Code MCP server (Teleport database access)
 ```
 
 ## Status
 
 See [PROJECT_STATUS.md](PROJECT_STATUS.md). In short: the Mac lab, Machine ID, MCP access and Splunk are working; the Ubuntu home server and a public DNS name with trusted TLS are the next phase.
+
+How long it took: all 13 build steps in 3 h 41 min, minute by minute, in [docs/BUILD_CLOCK.html](docs/BUILD_CLOCK.html). It is a standalone web page: download it and open it in a browser (GitHub shows HTML files as source code).
 
 ## References
 

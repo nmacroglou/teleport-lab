@@ -1,0 +1,262 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Teleport Lab Build Clock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: same schematic language as the lab wiremap. Headline number, a Gantt strip on one clock, then the log. */
+:root {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-2: #e9edf3;
+  --line: #c9d1dd;
+  --fg: #17202c;
+  --muted: #566274;
+  --build: #2463c9;
+  --identity: #b86e00;
+  --debug: #b3261e;
+  --extra: #7a8699;
+  --done: #1b8a58;
+  --display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141b; --panel: #171e28; --panel-2: #1e2733; --line: #2f3b4b;
+    --fg: #e4e9f0; --muted: #98a4b5;
+    --build: #6ea2ff; --identity: #f0a93a; --debug: #ff7a70; --extra: #7f8ba0; --done: #43c98c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141b; --panel: #171e28; --panel-2: #1e2733; --line: #2f3b4b;
+  --fg: #e4e9f0; --muted: #98a4b5;
+  --build: #6ea2ff; --identity: #f0a93a; --debug: #ff7a70; --extra: #7f8ba0; --done: #43c98c;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 16px; padding-block: 32px 64px; display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: 0.01em; }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; line-height: 1.05; }
+h2 { font-size: 1.55rem; font-weight: 600; }
+h3 { font-size: 1.1rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+code { font-family: var(--mono); font-size: 0.86em; }
+.eyebrow { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+header { display: grid; gap: 14px; }
+header p { color: var(--muted); }
+section { display: grid; gap: 16px; }
+
+/* Headline */
+.headline { display: flex; flex-wrap: wrap; gap: 20px 40px; align-items: end; }
+.big { display: grid; gap: 2px; }
+.big b { font-family: var(--display); font-weight: 700; font-size: clamp(2.6rem, 8vw, 4rem); line-height: 1; font-variant-numeric: tabular-nums; }
+.big span { font-size: 0.9rem; color: var(--muted); }
+.big.core b { color: var(--done); }
+
+/* Split bar */
+.split { display: flex; height: 38px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.split div { display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 0.72rem; color: var(--bg); white-space: nowrap; overflow: hidden; min-width: 0; }
+.s-build { background: var(--build); }
+.s-id { background: var(--identity); }
+.s-splunk { background: var(--done); }
+.s-debug { background: var(--debug); }
+.split-key { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 20px; font-size: 0.88rem; }
+.split-key div { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; }
+.split-key i { width: 12px; height: 12px; border-radius: 3px; display: block; }
+.split-key em { font-style: normal; font-family: var(--mono); font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Gantt */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.88rem; }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+.chart { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.chart svg { display: block; min-width: 900px; width: 100%; height: auto; }
+.grid { stroke: var(--line); stroke-width: 1; }
+.grid-strong { stroke: var(--done); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.tick { font-family: var(--mono); font-size: 11px; fill: var(--fg); }
+.tick-utc { font-family: var(--mono); font-size: 9.5px; fill: var(--muted); }
+.row-label { font-family: var(--display); font-weight: 600; font-size: 14px; fill: var(--fg); }
+.row-sub { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
+.bar-build { fill: var(--build); } .bar-id { fill: var(--identity); } .bar-splunk { fill: var(--done); }
+.bar-debug { fill: var(--debug); } .bar-extra { fill: var(--extra); }
+.bar-note { font-family: var(--mono); font-size: 10.5px; fill: var(--fg); }
+.flag { font-family: var(--mono); font-size: 10.5px; fill: var(--done); }
+.caption { color: var(--muted); font-size: 0.9rem; }
+
+/* Log */
+.log { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); display: grid; }
+.day { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); padding: 14px 0 8px 22px; }
+.ev { position: relative; display: grid; grid-template-columns: 5.2rem 1fr; gap: 4px 14px; padding: 5px 0 5px 22px; min-width: 0; }
+.ev::before { content: ""; position: absolute; left: -6px; top: 12px; width: 10px; height: 10px; border-radius: 50%; background: var(--bg); border: 2px solid var(--muted); }
+.ev.build::before { border-color: var(--build); }
+.ev.id::before { border-color: var(--identity); }
+.ev.splunk::before { border-color: var(--done); }
+.ev.debug::before { border-color: var(--debug); background: var(--debug); }
+.ev.extra::before { border-color: var(--extra); }
+.ev.mile::before { background: var(--done); border-color: var(--done); width: 12px; height: 12px; left: -7px; }
+.t { font-family: var(--mono); font-size: 0.82rem; font-variant-numeric: tabular-nums; line-height: 1.3; padding-top: 2px; }
+.t small { display: block; color: var(--muted); font-size: 0.72rem; }
+.what { min-width: 0; font-size: 0.93rem; }
+.what b { font-weight: 600; }
+.what span { color: var(--muted); }
+.src { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-left: 6px; white-space: nowrap; }
+
+.notes { display: grid; gap: 8px; font-size: 0.9rem; color: var(--muted); }
+.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+@media (max-width: 520px) { .ev { grid-template-columns: 1fr; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Teleport home lab · reconstructed from Git, the Teleport audit log and container timestamps</div>
+    <h1>Teleport Lab Build Clock</h1>
+    <p>From the first file in the repo to a fully working lab with Claude Code and Splunk wired in through Teleport. Times are Pacific (your Mac's clock), with UTC underneath.</p>
+    <div class="headline">
+      <div class="big core"><b>3 h 41 min</b><span>all 13 build steps · Sep 28, 7:39 pm → 11:20 pm</span></div>
+      <div class="big"><b>6 h 18 min</b><span>including demo data, dashboards and docs · until 1:57 am</span></div>
+      <div class="big"><b>40 min</b><span>of that spent on one Splunk restart loop</span></div>
+    </div>
+  </header>
+
+  <section aria-labelledby="split-h">
+    <h2 id="split-h">Where the 3 h 41 min went</h2>
+    <div class="split" role="img" aria-label="Steps 1 to 9: 58 minutes, Step 10: 58 minutes, Step 11: 9 minutes, Step 12: 29 minutes, Step 13: 27 minutes plus 40 minutes of debugging">
+      <div class="s-build" style="flex:58">1–9</div>
+      <div class="s-build" style="flex:58; opacity:.78">10</div>
+      <div class="s-id" style="flex:9"></div>
+      <div class="s-id" style="flex:29; opacity:.8">12</div>
+      <div class="s-splunk" style="flex:27">13</div>
+      <div class="s-debug" style="flex:40">loop</div>
+    </div>
+    <div class="split-key">
+      <div><i class="s-build"></i>Steps 1–9: core lab<em>58 min</em></div>
+      <div><i class="s-build" style="opacity:.78"></i>Step 10: trusted TLS<em>58 min</em></div>
+      <div><i class="s-id"></i>Step 11: tbot bot<em>9 min</em></div>
+      <div><i class="s-id" style="opacity:.8"></i>Step 12: Claude via MCP<em>29 min</em></div>
+      <div><i class="s-splunk"></i>Step 13: Splunk<em>27 min</em></div>
+      <div><i class="s-debug"></i>Step 13: restart loop<em>40 min</em></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="gantt-h">
+    <h2 id="gantt-h">On one clock</h2>
+    <div class="legend">
+      <span><i class="bar-build" style="background:var(--build)"></i>Core lab</span>
+      <span><i style="background:var(--identity)"></i>Machine identity and MCP</span>
+      <span><i style="background:var(--done)"></i>Splunk</span>
+      <span><i style="background:var(--debug)"></i>Debugging</span>
+      <span><i style="background:var(--extra)"></i>Extras</span>
+    </div>
+    <div class="chart">
+      <svg viewBox="0 0 1000 440" role="img" aria-label="Gantt chart of the build from 7:30 pm to 2:10 am Pacific">
+        <!-- scale: x = 180 + 2 * minutes after 02:30 UTC (7:30 pm PDT) -->
+        <g>
+          <line class="grid" x1="240" y1="36" x2="240" y2="410"/><text class="tick" x="240" y="22" text-anchor="middle">8 pm</text><text class="tick-utc" x="240" y="428" text-anchor="middle">03:00Z</text>
+          <line class="grid" x1="360" y1="36" x2="360" y2="410"/><text class="tick" x="360" y="22" text-anchor="middle">9 pm</text><text class="tick-utc" x="360" y="428" text-anchor="middle">04:00Z</text>
+          <line class="grid" x1="480" y1="36" x2="480" y2="410"/><text class="tick" x="480" y="22" text-anchor="middle">10 pm</text><text class="tick-utc" x="480" y="428" text-anchor="middle">05:00Z</text>
+          <line class="grid" x1="600" y1="36" x2="600" y2="410"/><text class="tick" x="600" y="22" text-anchor="middle">11 pm</text><text class="tick-utc" x="600" y="428" text-anchor="middle">06:00Z</text>
+          <line class="grid" x1="720" y1="36" x2="720" y2="410"/><text class="tick" x="720" y="22" text-anchor="middle">12 am</text><text class="tick-utc" x="720" y="428" text-anchor="middle">07:00Z</text>
+          <line class="grid" x1="840" y1="36" x2="840" y2="410"/><text class="tick" x="840" y="22" text-anchor="middle">1 am</text><text class="tick-utc" x="840" y="428" text-anchor="middle">08:00Z</text>
+          <line class="grid" x1="960" y1="36" x2="960" y2="410"/><text class="tick" x="960" y="22" text-anchor="middle">2 am</text><text class="tick-utc" x="960" y="428" text-anchor="middle">09:00Z</text>
+          <line class="grid-strong" x1="640" y1="36" x2="640" y2="410"/>
+          <text class="flag" x="646" y="48">11:20 pm · lab complete</text>
+        </g>
+
+        <text class="row-label" x="16" y="72">Steps 1–9</text><text class="row-sub" x="16" y="86">core lab</text>
+        <rect class="bar-build" x="198" y="62" width="116" height="22" rx="4"/>
+        <text class="bar-note" x="320" y="78">58 min</text>
+
+        <text class="row-label" x="16" y="112">Step 10</text><text class="row-sub" x="16" y="126">trusted TLS</text>
+        <rect class="bar-build" x="314" y="102" width="116" height="22" rx="4" opacity=".78"/>
+        <text class="bar-note" x="436" y="118">58 min</text>
+
+        <text class="row-label" x="16" y="152">Step 11</text><text class="row-sub" x="16" y="166">tbot bot</text>
+        <rect class="bar-id" x="430" y="142" width="18" height="22" rx="4"/>
+        <text class="bar-note" x="454" y="158">9 min</text>
+
+        <text class="row-label" x="16" y="192">Step 12</text><text class="row-sub" x="16" y="206">Claude via MCP</text>
+        <rect class="bar-id" x="448" y="182" width="58" height="22" rx="4" opacity=".8"/>
+        <text class="bar-note" x="512" y="198">29 min</text>
+
+        <text class="row-label" x="16" y="232">Step 13</text><text class="row-sub" x="16" y="246">Splunk</text>
+        <rect class="bar-splunk" x="506" y="222" width="32" height="22" rx="4"/>
+        <rect class="bar-debug" x="538" y="222" width="80" height="22" rx="0"/>
+        <rect class="bar-splunk" x="618" y="222" width="22" height="22" rx="4"/>
+        <text class="bar-note" x="648" y="238" style="fill:var(--debug)">40 min loop in the middle</text>
+
+        <text class="row-label" x="16" y="282">Extras</text><text class="row-sub" x="16" y="296">wiremap, demo data, docs</text>
+        <rect class="bar-extra" x="640" y="272" width="314" height="22" rx="4"/>
+        <text class="bar-note" x="652" y="288" style="fill:var(--bg)">2 h 37 min · dashboards, runbook, guides</text>
+
+        <text class="row-label" x="16" y="322">Demo run</text><text class="row-sub" x="16" y="336">scene 4, parts A + B</text>
+        <rect class="bar-extra" x="962" y="312" width="8" height="22" rx="2"/>
+        <text class="bar-note" x="956" y="352" text-anchor="end">2:01–2:04 am</text>
+
+        <text class="row-label" x="16" y="382">Milestones</text>
+        <circle cx="198" cy="376" r="5" class="bar-build"/><text class="row-sub" x="198" y="398" text-anchor="middle">start</text>
+        <circle cx="214" cy="376" r="5" class="bar-build"/>
+        <circle cx="314" cy="376" r="5" class="bar-build"/><text class="row-sub" x="314" y="398" text-anchor="middle">1st commit</text>
+        <circle cx="440" cy="376" r="5" class="bar-id"/><text class="row-sub" x="440" y="398" text-anchor="middle">bot joins</text>
+        <circle cx="504" cy="376" r="5" class="bar-id"/><text class="row-sub" x="514" y="398" text-anchor="middle">Claude: 4 servers</text>
+        <circle cx="618" cy="376" r="5" class="bar-splunk"/>
+        <circle cx="640" cy="376" r="6" class="bar-splunk"/><text class="row-sub" x="640" y="398" text-anchor="middle">Splunk healthy</text>
+      </svg>
+    </div>
+    <p class="caption">Bars run from one commit or first audit event to the next, so they include thinking time and short breaks. The Step 10 bar includes the Teleport container rebuild for the new certificates.</p>
+  </section>
+
+  <section aria-labelledby="log-h">
+    <h2 id="log-h">Minute by minute</h2>
+    <ol class="log">
+      <li class="day">Monday, Sep 28 · Pacific</li>
+      <li class="ev build"><div class="t">7:39 pm<small>02:39Z</small></div><div class="what"><b>Project starts.</b> <span>CLAUDE.md with the build order and safety rules.</span><span class="src">file</span></div></li>
+      <li class="ev build"><div class="t">7:47 pm<small>02:47Z</small></div><div class="what"><b>Teleport is running.</b> <span>First audit event: built-in roles created.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">7:55 pm<small>02:55Z</small></div><div class="what"><b>First user created.</b> <span>Invite link issued, MFA added at 7:57.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">7:58 pm<small>02:58Z</small></div><div class="what"><b>First login</b> <span>as nsuave.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">8:00 pm<small>03:00Z</small></div><div class="what"><b>linux-server-1 joins</b> <span>with a one-time token.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">8:05 pm<small>03:05Z</small></div><div class="what"><b>First SSH session</b> <span>through Teleport, recorded.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">8:12 pm<small>03:12Z</small></div><div class="what"><b>whoami web app</b> <span>opened through Teleport.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">8:20 pm<small>03:20Z</small></div><div class="what"><b>First database session</b> <span>to PostgreSQL, container up since 8:16.</span><span class="src">audit</span></div></li>
+      <li class="ev build"><div class="t">8:24 pm<small>03:24Z</small></div><div class="what"><b>Audit logging tested</b> <span>with a deliberate failed login.</span><span class="src">audit</span></div></li>
+      <li class="ev mile"><div class="t">8:37 pm<small>03:37Z</small></div><div class="what"><b>Steps 1–9 committed</b> <span>b559c9f</span><span class="src">git</span></div></li>
+      <li class="ev build"><div class="t">8:43 pm<small>03:43Z</small></div><div class="what"><b>Teleport rebuilt</b> <span>for trusted TLS with a local mkcert CA.</span><span class="src">docker</span></div></li>
+      <li class="ev mile"><div class="t">9:35 pm<small>04:35Z</small></div><div class="what"><b>Step 10 committed</b> <span>25db818</span><span class="src">git</span></div></li>
+      <li class="ev id"><div class="t">9:38 pm<small>04:38Z</small></div><div class="what"><b>Bot lab-bot created and joined.</b> <span>First bot database query at 9:40.</span><span class="src">audit</span></div></li>
+      <li class="ev mile"><div class="t">9:44 pm<small>04:44Z</small></div><div class="what"><b>Step 11 committed</b> <span>c2cdd3a</span><span class="src">git</span></div></li>
+      <li class="ev id"><div class="t">9:48 pm<small>04:48Z</small></div><div class="what"><b>Read-only proven:</b> <span>bot's write and admin-user attempts refused.</span><span class="src">audit</span></div></li>
+      <li class="ev id"><div class="t">10:02 pm<small>05:02Z</small></div><div class="what"><b>Claude Code answers "4 servers"</b> <span>through the Teleport MCP tool.</span><span class="src">session</span></div></li>
+      <li class="ev mile"><div class="t">10:03 pm<small>05:03Z</small></div><div class="what"><b>Step 12 committed</b> <span>cab7e30</span><span class="src">git</span></div></li>
+      <li class="ev id"><div class="t">10:10 pm<small>05:10Z</small></div><div class="what"><b>tbot renews on schedule</b> <span>and queries keep working.</span><span class="src">session</span></div></li>
+      <li class="ev splunk"><div class="t">10:24 pm<small>05:24Z</small></div><div class="what"><b>Splunk starts</b> <span>after a 6.5 GB download, healthy at 10:26.</span><span class="src">session</span></div></li>
+      <li class="ev mile"><div class="t">10:28 pm<small>05:28Z</small></div><div class="what"><b>Step 13A committed</b> <span>b77d90b</span><span class="src">git</span></div></li>
+      <li class="ev debug"><div class="t">10:30 pm<small>05:30Z</small></div><div class="what"><b>Splunk loop begins</b> <span>after adding the audit mounts: chown hang, then the AVX CPU check.</span><span class="src">session</span></div></li>
+      <li class="ev debug"><div class="t">11:08 pm<small>06:08Z</small></div><div class="what"><b>Root cause found:</b> <span>the recreated container's first-run marker. Removed it.</span><span class="src">session</span></div></li>
+      <li class="ev splunk"><div class="t">11:09 pm<small>06:09Z</small></div><div class="what"><b>Splunk healthy again.</b> <span>Audit events in index=teleport, tokens masked.</span><span class="src">session</span></div></li>
+      <li class="ev mile"><div class="t">11:17 pm<small>06:17Z</small></div><div class="what"><b>Step 13B committed</b> <span>682c2f7</span><span class="src">git</span></div></li>
+      <li class="ev mile"><div class="t">11:20 pm<small>06:20Z</small></div><div class="what"><b>Loop fix committed. Lab complete.</b> <span>9ff2cb8, recreate test passed.</span><span class="src">git</span></div></li>
+      <li class="ev extra"><div class="t">11:30 pm<small>06:30Z</small></div><div class="what"><b>Wiremap published.</b></div></li>
+      <li class="ev extra"><div class="t">11:39 pm<small>06:39Z</small></div><div class="what"><b>Splunk gets the synthetic demo feed</b> <span>index=teleport_demo, 2,466 events.</span><span class="src">docker</span></div></li>
+      <li class="day">Tuesday, Sep 29 · Pacific</li>
+      <li class="ev mile"><div class="t">1:39 am<small>08:39Z</small></div><div class="what"><b>Demo data, dashboards, runbook committed</b> <span>c0c1cea</span><span class="src">git</span></div></li>
+      <li class="ev mile"><div class="t">1:46 am<small>08:46Z</small></div><div class="what"><b>Project docs and 13 dashboards committed</b> <span>c621330</span><span class="src">git</span></div></li>
+      <li class="ev mile"><div class="t">1:57 am<small>08:57Z</small></div><div class="what"><b>Lab run guide committed</b> <span>a983769</span><span class="src">git</span></div></li>
+      <li class="ev extra"><div class="t">2:01 am<small>09:01Z</small></div><div class="what"><b>Demo scene 4:</b> <span>8 failed logins refused, then the bot's SSH attempt denied at 2:04.</span><span class="src">audit</span></div></li>
+      <li class="ev mile"><div class="t">10:38 am<small>17:38Z</small></div><div class="what"><b>Scorecard drill-down committed</b> <span>3512234</span><span class="src">git</span></div></li>
+    </ol>
+  </section>
+
+  <section class="notes" aria-label="How this was measured">
+    <h3>How this was measured</h3>
+    <ul>
+      <li>Sources: 11 Git commits, 363 Teleport audit events, container and file creation times, and this Claude Code session.</li>
+      <li>Your Mac's clock is Pacific daylight time (UTC−7). The timestamps were recorded in UTC.</li>
+      <li>Durations are wall-clock time between recorded moments, so they include reading, thinking and short breaks.</li>
+      <li>Steps 1–11 happened in an earlier session. Their times come from Git and the audit log, not from that session's history.</li>
+    </ul>
+  </section>
+</div>
+
+</body></html>
