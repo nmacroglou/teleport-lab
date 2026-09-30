@@ -3,6 +3,16 @@
   <view name="tp_studio_scorecard" />
   <view name="tp_identity" />
   <view name="tp_studio_identity" />
+  <collection label="Identity drill-down (L1 / L2)">
+    <view name="id_ai_agents" />
+    <view name="id_humans" />
+    <view name="id_workloads" />
+    <view name="id_refusals" />
+    <view name="id_governance" />
+    <view name="id_estate" />
+    <view name="id_trust" />
+    <view name="id_actor" />
+  </collection>
   <collection label="Demo scenes (Studio)">
     <view name="tp_studio_onboarding" />
     <view name="tp_studio_auditor" />
