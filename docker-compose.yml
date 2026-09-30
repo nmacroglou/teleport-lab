@@ -92,6 +92,9 @@ services:
     container_name: splunk
     hostname: splunk
     restart: unless-stopped
+    # Under Rosetta, Splunk 10's background services alone use ~4 cores.
+    # Cap it so the rest of the Mac stays responsive.
+    cpus: 2.0
     environment:
       # Accepts the Splunk General Terms (approved by the lab owner).
       SPLUNK_START_ARGS: --accept-license
