@@ -15,6 +15,11 @@ teleport:
     format:
       output: text
 
+# The debug socket cannot be created on a Docker Desktop bind mount, so the
+# node fails to start after any Docker restart. Same setting as the main config.
+debug_service:
+  enabled: false
+
 auth_service:
   enabled: false
 
