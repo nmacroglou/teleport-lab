@@ -116,33 +116,37 @@ page("tp_studio_auditor", "2 · Auditor Evidence (Studio)", "Who touched the dat
      {"input_who": itext("Identity (name or *)", "who"), "input_res": itext("Database (name or *)", "res")}, ds, v, s, 1680, {"who": "*", "res": "*"})
 
 # ================= 3. AI AGENT =================
+# Story: (1) a narrow, short-lived identity -> (2) which day went wrong -> (3) that day, step by step -> (4) the raw evidence
 ds = BASE(); ds["ds_ag"] = chain('| search actor="$agent$"')
 ds["k1"] = spark('event="db.session.start" AND outcome="allowed"', "ds_ag")
 ds["k2"] = spark('event="db.session.query" AND is_write=0', "ds_ag")
 ds["k3"] = spark('is_write=1', "ds_ag")
-ds["k4"] = spark('event="db.session.start" AND outcome="denied"', "ds_ag")
+ds["k4"] = spark('(event="db.session.start" OR event="auth") AND outcome="denied"', "ds_ag")
 ds["k5"] = plain('| search event="cert.create" | stats avg(ttl_h) as h | eval h=round(h,1) | fields h', "ds_ag")
-ds["c1"] = chain('| search event IN ("db.session.query","db.session.start") | eval kind=case(is_write=1,"write attempt",event="db.session.start" AND outcome="denied","blocked by Teleport",event="db.session.query","read (allowed)") | where isnotnull(kind) | timechart span=1d count by kind', "ds_ag")
+ds["c1"] = chain('| search event IN ("db.session.query","db.session.start","auth") | eval kind=case(is_write=1,"tried to change data",outcome="denied" AND event IN ("db.session.start","auth"),"refused by Teleport",event="db.session.query","normal read") | where isnotnull(kind) | timechart span=1d count by kind', "ds_ag")
 ds["t1"] = chain('| stats dc(resource) as resources, values(resource) as reaches, values(db_user) as as_db_user, avg(ttl_h) as avg_cert_hours by actor | eval reaches=mvjoin(mvindex(reaches,0,2),", "), as_db_user=mvjoin(mvindex(as_db_user,0,2),", "), avg_cert_hours=round(avg_cert_hours,1)', "ds_ag")
-ds["t2"] = chain('| search event IN ("db.session.start","db.session.query") | stats min(_time) as started, count(eval(event="db.session.query")) as queries, sum(is_write) as write_attempts, count(eval(event="db.session.start" AND outcome="denied")) as blocked_connects, values(db_user) as db_user by sid, actor | eval verdict=case(blocked_connects>0 AND write_attempts>0,"Blocked + write attempt", blocked_connects>0,"Blocked at Teleport", write_attempts>0,"Write attempted", true(),"Clean read-only") | eval sev=case(verdict="Blocked + write attempt",0,verdict="Blocked at Teleport",1,verdict="Write attempted",2,true(),3) | sort 0 sev - started | eval started=strftime(started,"%Y-%m-%d %H:%M") | table started actor verdict queries write_attempts blocked_connects db_user sid', "ds_ag")
-ds["t3"] = chain('| search sid="$sel_sid$" | sort 0 _time | eval time=strftime(_time,"%H:%M:%S") | table time event db_user db_query outcome', "ds_base")
-VER = {"Clean read-only": "#1F6B4A", "Write attempted": "#7A5A1A", "Blocked at Teleport": "#7A2B27", "Blocked + write attempt": "#7A2B27"}
-v = {"v_k1": pk("k1", "AGENT DATABASE SESSIONS", BLUE), "v_k2": pk("k2", "READ QUERIES", GREEN), "v_k3": pk("k3", "WRITE ATTEMPTS", GREEN, alert=AMBER), "v_k4": pk("k4", "BLOCKED AT TELEPORT", GREEN, alert=RED),
+ds["t2"] = chain('| eval day=strftime(_time,"%Y-%m-%d") | stats count(eval(event="db.session.query" AND is_write=0)) as normal_reads, sum(is_write) as tried_to_change_data, count(eval(event="db.session.start" AND outcome="denied")) as admin_login_refused, count(eval(event="auth" AND outcome="denied")) as ssh_refused by day, actor | eval refused_total=tried_to_change_data+admin_login_refused+ssh_refused | eval verdict=case(refused_total>=6,"Went off-script, stopped every time",refused_total>0,"Probed, stopped",true(),"Normal day") | sort 0 - refused_total - day | table day actor verdict normal_reads tried_to_change_data admin_login_refused ssh_refused', "ds_ag")
+ds["t3"] = chain('| eval day=strftime(_time,"%Y-%m-%d") | search day="$sel_day$" actor="$sel_actor$" | where event IN ("bot.join","cert.create","db.session.start","db.session.query","db.session.query.failed","auth") | sort 0 _time | streamstats count as step | eval time=strftime(_time,"%H:%M:%S") | eval what_it_did=case(event="bot.join","Agent starts and joins with its own bot identity",event="cert.create","Teleport issues a short-lived certificate ("."".ttl_h." hour)",event="db.session.start" AND outcome="allowed","Opens a database session as ".db_user,event="db.session.start","Asks to connect as the admin database user: ".db_user,event="db.session.query" AND is_write=1,"TRIES TO CHANGE DATA: ".db_query,event="db.session.query","Reads: ".db_query,event="db.session.query.failed","The database runs it and rejects it",event="auth","Tries to open SSH as ".login,true(),event) | eval result=case(outcome="denied","REFUSED",is_write=1,"Sent on, and logged",true(),"Allowed") | eval stopped_by=case(event="db.session.start" AND outcome="denied","Teleport: this role has no admin database user",event="auth" AND outcome="denied","Teleport: this role has no SSH access",event="db.session.query.failed","The read-only database user",is_write=1,"Next step: the read-only database user",true(),"") | table step time what_it_did result stopped_by uid', "ds_ag")
+ds["t4"] = {"type": "ds.search", "options": {"query": '$src$ sourcetype=teleport:audit uid="$sel_uid$" | eval actor=coalesce(user,\'identity.user\',user_name) | eval evidence=_raw | table _time actor event code evidence', "queryParameters": TR}, "name": "evidence"}
+STEPCOL = {"REFUSED": "#7A2B27", "Sent on, and logged": "#7A5A1A", "Allowed": "#1F4E3A"}
+DAYCOL = {"Went off-script, stopped every time": "#7A2B27", "Probed, stopped": "#7A5A1A", "Normal day": "#1F4E3A"}
+v = {"v_k1": pk("k1", "DATABASE SESSIONS", BLUE), "v_k2": pk("k2", "NORMAL READS", GREEN), "v_k3": pk("k3", "TRIED TO CHANGE DATA", GREEN, alert=AMBER), "v_k4": pk("k4", "REFUSED BY TELEPORT", GREEN, alert=RED),
      "v_k5": plainkpi("k5", "CREDENTIAL LIFETIME (HOURS)", AMBER),
-     "v_c1": col("c1", "Intent vs outcome, per day", {"read (allowed)": GREEN, "write attempt": AMBER, "blocked by Teleport": RED}),
-     "v_t1": mtable("t1", "Blast radius: what can each identity reach?", 6),
-     "v_t2": mtable("t2", "Agent sessions: risky first (click a row to replay it)", 6, "verdict", VER, tok(("sel_sid", "row.sid.value"))),
-     "v_t3": mtable("t3", "Session replay: exactly what this session ran", 8),
-     "v_n": card("**Say it like this:** Claude decides. Teleport decides what Claude is allowed to do. Splunk records what actually happened. The agent has its own machine identity (not a human admin), a read-only role, and a credential that lives about an hour.  \n"
-                 "*Honest detail:* a write attempt shown as allowed means Teleport forwarded and logged the query; the read-only database user is what refuses the change. Teleport itself blocks the request when the agent asks for a database user its role does not allow (the red rows).")}
+     "v_c1": col("c1", "Most days it just reads. The spikes are the bad days.", {"normal read": GREEN, "tried to change data": AMBER, "refused by Teleport": RED}),
+     "v_t1": mtable("t1", "The job it was given: what can this identity reach?", 6),
+     "v_t2": mtable("t2", "Which day went wrong? Click the worst one.", 6, "verdict", DAYCOL, tok(("sel_day", "row.day.value"), ("sel_actor", "row.actor.value")) + tokv(sel_uid="__none__")),
+     "v_t3": mtable("t3", "The story of that day, step by step. Click a step for the raw evidence.", 20, "result", STEPCOL, tok(("sel_uid", "row.uid.value"))),
+     "v_t4": mtable("t4", "The evidence: the audit event exactly as Teleport wrote it", 3),
+     "v_n": card("**The story in one breath:** a Claude agent was given a narrow job: read one database, with a certificate that lasts about an hour. Then it went off-script. It asked for the admin database user, tried to drop and change a table, and tried to open SSH. **Nothing landed.** Teleport refused the admin login and the SSH. The read-only database user rejected the writes. Every attempt is in one log with a unique event ID.  \n"
+                 "*Honest detail:* a write shown as sent on and logged means Teleport forwarded the query; the read-only database user is what refuses it. The database-rejection event shape is approximated in this synthetic data.")}
 s = [blk("v_k%d" % (i + 1), X0 + i * (cols(5) + G), 140, cols(5), 190) for i in range(5)]
-for vid, t, c, y in [("v_l1", "①  What the agent tried, and what happened", PURPLE, 350), ("v_l2", "②  Every session: click one to replay it", AMBER, 800), ("v_l3", "③  The replay, then how to say it", GREEN, 1170)]:
+for vid, t, c, y in [("v_l1", "①  The setup: a narrow job and a credential that expires", BLUE, 350), ("v_l2", "②  Which day went wrong?", AMBER, 800), ("v_l3", "③  What happened that day, step by step", RED, 1170), ("v_l4", "④  The proof", GREEN, 1900)]:
     d, b = label(vid, t, c, X0, y, W); v.update(d); s += b
 s += [blk("v_c1", X0, 392, 1000, 380), blk("v_t1", X0 + 1000 + G, 392, W - 1000 - G, 380), blk("v_t2", X0, 842, W, 300),
-      blk("v_t3", X0, 1212, W, 300), blk("v_n", X0, 1532, W, 130)]
-page("tp_studio_agent", "3 · AI Agent Governance (Studio)", "Claude decides. Teleport decides what is allowed. Splunk records what happened.", PURPLE,
-     "Scene 3: AI agent governance. Claude decides. Teleport decides. Splunk proves.", "A separate machine identity, a read-only role, a one-hour credential, and every attempt on the record.",
-     {"input_agent": itext("Machine identity (name or bot-*)", "agent", "bot-*")}, ds, v, s, 1700, {"agent": "bot-*", "sel_sid": "__none__"})
+      blk("v_t3", X0, 1212, W, 650), blk("v_t4", X0, 1942, W, 190), blk("v_n", X0, 2160, W, 150)]
+page("tp_studio_agent", "3 · AI Agent Governance (Studio)", "A Claude agent goes off-script. Teleport stops it. Splunk shows exactly what happened.", PURPLE,
+     "Scene 3: an AI agent goes off-script", "A separate machine identity, a read-only role, a one-hour credential. Watch what it tried, and what stopped it.",
+     {"input_agent": itext("Machine identity (name or bot-*)", "agent", "bot-*")}, ds, v, s, 2340, {"agent": "bot-*", "sel_day": "__none__", "sel_actor": "*", "sel_uid": "__none__"})
 
 # ================= 4. SECURITY =================
 EXTRA = '''

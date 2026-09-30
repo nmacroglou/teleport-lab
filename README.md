@@ -36,6 +36,14 @@ flowchart LR
   A --> S[Splunk dashboards]
 ```
 
+### The wiring
+
+How the pieces connect on the Mac: people (blue), the machine identity for Claude Code and `tbot` (orange dashed), and the audit trail into Splunk (green).
+
+![The wiring: people, machine identity and audit trail across the Mac, Docker Desktop and Splunk](docs/images/wiring-map.png)
+
+Only the Teleport proxy and auth ports and Splunk Web are published, and only on 127.0.0.1. The SSH node, the web app and PostgreSQL can only be reached through Teleport.
+
 More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Principles

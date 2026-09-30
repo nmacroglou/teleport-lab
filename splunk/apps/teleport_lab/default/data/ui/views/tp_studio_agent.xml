@@ -1,10 +1,10 @@
 <dashboard version="2" theme="dark">
   <label>3 · AI Agent Governance (Studio)</label>
-  <description>Claude decides. Teleport decides what is allowed. Splunk records what happened.</description>
+  <description>A Claude agent goes off-script. Teleport stops it. Splunk shows exactly what happened.</description>
   <definition><![CDATA[
 {
   "title": "3 · AI Agent Governance (Studio)",
-  "description": "Claude decides. Teleport decides what is allowed. Splunk records what happened.",
+  "description": "A Claude agent goes off-script. Teleport stops it. Splunk shows exactly what happened.",
   "inputs": {
     "input_time": {
       "type": "input.timerange",
@@ -61,7 +61,13 @@
         "agent": {
           "value": "bot-*"
         },
-        "sel_sid": {
+        "sel_day": {
+          "value": "__none__"
+        },
+        "sel_actor": {
+          "value": "*"
+        },
+        "sel_uid": {
           "value": "__none__"
         }
       }
@@ -111,7 +117,7 @@
       "type": "ds.chain",
       "options": {
         "extend": "ds_ag",
-        "query": "| eventstats count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as total | timechart span=1d count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as events, first(total) as total | eventstats max(total) as total"
+        "query": "| eventstats count(eval((event=\"db.session.start\" OR event=\"auth\") AND outcome=\"denied\")) as total | timechart span=1d count(eval((event=\"db.session.start\" OR event=\"auth\") AND outcome=\"denied\")) as events, first(total) as total | eventstats max(total) as total"
       }
     },
     "k5": {
@@ -125,7 +131,7 @@
       "type": "ds.chain",
       "options": {
         "extend": "ds_ag",
-        "query": "| search event IN (\"db.session.query\",\"db.session.start\") | eval kind=case(is_write=1,\"write attempt\",event=\"db.session.start\" AND outcome=\"denied\",\"blocked by Teleport\",event=\"db.session.query\",\"read (allowed)\") | where isnotnull(kind) | timechart span=1d count by kind"
+        "query": "| search event IN (\"db.session.query\",\"db.session.start\",\"auth\") | eval kind=case(is_write=1,\"tried to change data\",outcome=\"denied\" AND event IN (\"db.session.start\",\"auth\"),\"refused by Teleport\",event=\"db.session.query\",\"normal read\") | where isnotnull(kind) | timechart span=1d count by kind"
       }
     },
     "t1": {
@@ -139,21 +145,32 @@
       "type": "ds.chain",
       "options": {
         "extend": "ds_ag",
-        "query": "| search event IN (\"db.session.start\",\"db.session.query\") | stats min(_time) as started, count(eval(event=\"db.session.query\")) as queries, sum(is_write) as write_attempts, count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as blocked_connects, values(db_user) as db_user by sid, actor | eval verdict=case(blocked_connects>0 AND write_attempts>0,\"Blocked + write attempt\", blocked_connects>0,\"Blocked at Teleport\", write_attempts>0,\"Write attempted\", true(),\"Clean read-only\") | eval sev=case(verdict=\"Blocked + write attempt\",0,verdict=\"Blocked at Teleport\",1,verdict=\"Write attempted\",2,true(),3) | sort 0 sev - started | eval started=strftime(started,\"%Y-%m-%d %H:%M\") | table started actor verdict queries write_attempts blocked_connects db_user sid"
+        "query": "| eval day=strftime(_time,\"%Y-%m-%d\") | stats count(eval(event=\"db.session.query\" AND is_write=0)) as normal_reads, sum(is_write) as tried_to_change_data, count(eval(event=\"db.session.start\" AND outcome=\"denied\")) as admin_login_refused, count(eval(event=\"auth\" AND outcome=\"denied\")) as ssh_refused by day, actor | eval refused_total=tried_to_change_data+admin_login_refused+ssh_refused | eval verdict=case(refused_total>=6,\"Went off-script, stopped every time\",refused_total>0,\"Probed, stopped\",true(),\"Normal day\") | sort 0 - refused_total - day | table day actor verdict normal_reads tried_to_change_data admin_login_refused ssh_refused"
       }
     },
     "t3": {
       "type": "ds.chain",
       "options": {
-        "extend": "ds_base",
-        "query": "| search sid=\"$sel_sid$\" | sort 0 _time | eval time=strftime(_time,\"%H:%M:%S\") | table time event db_user db_query outcome"
+        "extend": "ds_ag",
+        "query": "| eval day=strftime(_time,\"%Y-%m-%d\") | search day=\"$sel_day$\" actor=\"$sel_actor$\" | where event IN (\"bot.join\",\"cert.create\",\"db.session.start\",\"db.session.query\",\"db.session.query.failed\",\"auth\") | sort 0 _time | streamstats count as step | eval time=strftime(_time,\"%H:%M:%S\") | eval what_it_did=case(event=\"bot.join\",\"Agent starts and joins with its own bot identity\",event=\"cert.create\",\"Teleport issues a short-lived certificate (\".\"\".ttl_h.\" hour)\",event=\"db.session.start\" AND outcome=\"allowed\",\"Opens a database session as \".db_user,event=\"db.session.start\",\"Asks to connect as the admin database user: \".db_user,event=\"db.session.query\" AND is_write=1,\"TRIES TO CHANGE DATA: \".db_query,event=\"db.session.query\",\"Reads: \".db_query,event=\"db.session.query.failed\",\"The database runs it and rejects it\",event=\"auth\",\"Tries to open SSH as \".login,true(),event) | eval result=case(outcome=\"denied\",\"REFUSED\",is_write=1,\"Sent on, and logged\",true(),\"Allowed\") | eval stopped_by=case(event=\"db.session.start\" AND outcome=\"denied\",\"Teleport: this role has no admin database user\",event=\"auth\" AND outcome=\"denied\",\"Teleport: this role has no SSH access\",event=\"db.session.query.failed\",\"The read-only database user\",is_write=1,\"Next step: the read-only database user\",true(),\"\") | table step time what_it_did result stopped_by uid"
       }
+    },
+    "t4": {
+      "type": "ds.search",
+      "options": {
+        "query": "$src$ sourcetype=teleport:audit uid=\"$sel_uid$\" | eval actor=coalesce(user,'identity.user',user_name) | eval evidence=_raw | table _time actor event code evidence",
+        "queryParameters": {
+          "earliest": "$global_time.earliest$",
+          "latest": "$global_time.latest$"
+        }
+      },
+      "name": "evidence"
     }
   },
   "visualizations": {
     "v_k1": {
       "type": "splunk.singlevalue",
-      "title": "AGENT DATABASE SESSIONS",
+      "title": "DATABASE SESSIONS",
       "dataSources": {
         "primary": "k1"
       },
@@ -172,7 +189,7 @@
     },
     "v_k2": {
       "type": "splunk.singlevalue",
-      "title": "READ QUERIES",
+      "title": "NORMAL READS",
       "dataSources": {
         "primary": "k2"
       },
@@ -191,7 +208,7 @@
     },
     "v_k3": {
       "type": "splunk.singlevalue",
-      "title": "WRITE ATTEMPTS",
+      "title": "TRIED TO CHANGE DATA",
       "dataSources": {
         "primary": "k3"
       },
@@ -222,7 +239,7 @@
     },
     "v_k4": {
       "type": "splunk.singlevalue",
-      "title": "BLOCKED AT TELEPORT",
+      "title": "REFUSED BY TELEPORT",
       "dataSources": {
         "primary": "k4"
       },
@@ -267,7 +284,7 @@
     },
     "v_c1": {
       "type": "splunk.column",
-      "title": "Intent vs outcome, per day",
+      "title": "Most days it just reads. The spikes are the bad days.",
       "dataSources": {
         "primary": "c1"
       },
@@ -276,15 +293,15 @@
         "legendDisplay": "bottom",
         "stackMode": "stacked",
         "seriesColorsByField": {
-          "read (allowed)": "#3FB68B",
-          "write attempt": "#F0A030",
-          "blocked by Teleport": "#E5534B"
+          "normal read": "#3FB68B",
+          "tried to change data": "#F0A030",
+          "refused by Teleport": "#E5534B"
         }
       }
     },
     "v_t1": {
       "type": "splunk.table",
-      "title": "Blast radius: what can each identity reach?",
+      "title": "The job it was given: what can this identity reach?",
       "dataSources": {
         "primary": "t1"
       },
@@ -298,7 +315,7 @@
     },
     "v_t2": {
       "type": "splunk.table",
-      "title": "Agent sessions: risky first (click a row to replay it)",
+      "title": "Which day went wrong? Click the worst one.",
       "dataSources": {
         "primary": "t2"
       },
@@ -317,20 +334,16 @@
       "context": {
         "verdictBg": [
           {
-            "match": "Clean read-only",
-            "value": "#1F6B4A"
+            "match": "Went off-script, stopped every time",
+            "value": "#7A2B27"
           },
           {
-            "match": "Write attempted",
+            "match": "Probed, stopped",
             "value": "#7A5A1A"
           },
           {
-            "match": "Blocked at Teleport",
-            "value": "#7A2B27"
-          },
-          {
-            "match": "Blocked + write attempt",
-            "value": "#7A2B27"
+            "match": "Normal day",
+            "value": "#1F4E3A"
           }
         ]
       },
@@ -340,8 +353,23 @@
           "options": {
             "tokens": [
               {
-                "token": "sel_sid",
-                "key": "row.sid.value"
+                "token": "sel_day",
+                "key": "row.day.value"
+              },
+              {
+                "token": "sel_actor",
+                "key": "row.actor.value"
+              }
+            ]
+          }
+        },
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "sel_uid",
+                "value": "__none__"
               }
             ]
           }
@@ -350,12 +378,60 @@
     },
     "v_t3": {
       "type": "splunk.table",
-      "title": "Session replay: exactly what this session ran",
+      "title": "The story of that day, step by step. Click a step for the raw evidence.",
       "dataSources": {
         "primary": "t3"
       },
       "options": {
-        "count": 8,
+        "count": 20,
+        "backgroundColor": "#141B27",
+        "dataOverlayMode": "none",
+        "showRowNumbers": false,
+        "wrap": true,
+        "columnFormat": {
+          "result": {
+            "rowBackgroundColors": "> table | seriesByName(\"result\") | matchValue(resultBg)"
+          }
+        }
+      },
+      "context": {
+        "resultBg": [
+          {
+            "match": "REFUSED",
+            "value": "#7A2B27"
+          },
+          {
+            "match": "Sent on, and logged",
+            "value": "#7A5A1A"
+          },
+          {
+            "match": "Allowed",
+            "value": "#1F4E3A"
+          }
+        ]
+      },
+      "eventHandlers": [
+        {
+          "type": "drilldown.setToken",
+          "options": {
+            "tokens": [
+              {
+                "token": "sel_uid",
+                "key": "row.uid.value"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "v_t4": {
+      "type": "splunk.table",
+      "title": "The evidence: the audit event exactly as Teleport wrote it",
+      "dataSources": {
+        "primary": "t4"
+      },
+      "options": {
+        "count": 3,
         "backgroundColor": "#141B27",
         "dataOverlayMode": "none",
         "showRowNumbers": false,
@@ -367,21 +443,21 @@
       "options": {
         "backgroundColor": "#141B27",
         "fontColor": "#E6EDF7",
-        "markdown": "**Say it like this:** Claude decides. Teleport decides what Claude is allowed to do. Splunk records what actually happened. The agent has its own machine identity (not a human admin), a read-only role, and a credential that lives about an hour.  \n*Honest detail:* a write attempt shown as allowed means Teleport forwarded and logged the query; the read-only database user is what refuses the change. Teleport itself blocks the request when the agent asks for a database user its role does not allow (the red rows)."
+        "markdown": "**The story in one breath:** a Claude agent was given a narrow job: read one database, with a certificate that lasts about an hour. Then it went off-script. It asked for the admin database user, tried to drop and change a table, and tried to open SSH. **Nothing landed.** Teleport refused the admin login and the SSH. The read-only database user rejected the writes. Every attempt is in one log with a unique event ID.  \n*Honest detail:* a write shown as sent on and logged means Teleport forwarded the query; the read-only database user is what refuses it. The database-rejection event shape is approximated in this synthetic data."
       }
     },
     "v_l1": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "## ①  What the agent tried, and what happened",
-        "fontColor": "#B07CE8",
+        "markdown": "## ①  The setup: a narrow job and a credential that expires",
+        "fontColor": "#4E9BE0",
         "backgroundColor": "transparent"
       }
     },
     "v_l2": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "## ②  Every session: click one to replay it",
+        "markdown": "## ②  Which day went wrong?",
         "fontColor": "#F0A030",
         "backgroundColor": "transparent"
       }
@@ -389,7 +465,15 @@
     "v_l3": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "## ③  The replay, then how to say it",
+        "markdown": "## ③  What happened that day, step by step",
+        "fontColor": "#E5534B",
+        "backgroundColor": "transparent"
+      }
+    },
+    "v_l4": {
+      "type": "splunk.markdown",
+      "options": {
+        "markdown": "## ④  The proof",
         "fontColor": "#3FB68B",
         "backgroundColor": "transparent"
       }
@@ -405,7 +489,7 @@
     "v_h1": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "# Scene 3: AI agent governance. Claude decides. Teleport decides. Splunk proves.",
+        "markdown": "# Scene 3: an AI agent goes off-script",
         "fontColor": "#FFFFFF",
         "backgroundColor": "transparent"
       }
@@ -413,7 +497,7 @@
     "v_h2": {
       "type": "splunk.markdown",
       "options": {
-        "markdown": "A separate machine identity, a read-only role, a one-hour credential, and every attempt on the record.",
+        "markdown": "A separate machine identity, a read-only role, a one-hour credential. Watch what it tried, and what stopped it.",
         "fontColor": "#9FB3CC",
         "backgroundColor": "transparent"
       }
@@ -423,7 +507,7 @@
     "type": "absolute",
     "options": {
       "width": 1920,
-      "height": 1700,
+      "height": 2340,
       "display": "auto-scale",
       "backgroundColor": "#0B0F17"
     },
@@ -539,6 +623,16 @@
         }
       },
       {
+        "item": "v_l4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1900,
+          "w": 1840,
+          "h": 36
+        }
+      },
+      {
         "item": "v_c1",
         "type": "block",
         "position": {
@@ -575,7 +669,17 @@
           "x": 40,
           "y": 1212,
           "w": 1840,
-          "h": 300
+          "h": 650
+        }
+      },
+      {
+        "item": "v_t4",
+        "type": "block",
+        "position": {
+          "x": 40,
+          "y": 1942,
+          "w": 1840,
+          "h": 190
         }
       },
       {
@@ -583,9 +687,9 @@
         "type": "block",
         "position": {
           "x": 40,
-          "y": 1532,
+          "y": 2160,
           "w": 1840,
-          "h": 130
+          "h": 150
         }
       }
     ],
