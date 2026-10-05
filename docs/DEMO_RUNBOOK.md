@@ -4,6 +4,7 @@ Length: about 20 minutes plus Q&A. Audience: Teleport technical interview / exec
 Data: dashboards default to **Demo data** (synthetic, clearly labeled). Switch **Data source** to **Live lab data** for the live scenes.
 
 ## Before you start (10 minutes ahead)
+- [ ] Easiest path: `scripts/demo-menu.sh` (pre-flight, every scene trigger, and `r` to reset demo users, locks and invites afterwards)
 - [ ] `scripts/demo-status.sh` shows no `[FAIL]` lines
 - [ ] Splunk open at http://127.0.0.1:8000 -> Teleport Lab app
 - [ ] Claude Code open in this project (MCP tool `teleport-databases` connected)

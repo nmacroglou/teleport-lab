@@ -38,9 +38,9 @@ flowchart LR
 
 ### The wiring
 
-How the pieces connect on the Mac: people (blue), the machine identity for Claude Code and `tbot` (orange dashed), and the audit trail into Splunk (green).
+How the pieces connect on the Mac: people (blue), the machine identity for Claude Code and `tbot` (orange dashed), the audit trail into Splunk (green), and the iPad on the home Wi-Fi (purple dotted, LAN only). Editable source: [docs/images/wiring-map.svg](docs/images/wiring-map.svg).
 
-![The wiring: people, machine identity and audit trail across the Mac, Docker Desktop and Splunk](docs/images/wiring-map.png)
+![The wiring: iPad on the home network, people, machine identity and audit trail across the Mac, Docker Desktop and Splunk](docs/images/wiring-map.png)
 
 Only the Teleport proxy and auth ports and Splunk Web are published, on 127.0.0.1. The one exception is Teleport's web port 3080, which is also published on the Mac's home-network address so an iPad can log in (see Phase 2 in docs/ARCHITECTURE.md). The SSH node, the web app and PostgreSQL can only be reached through Teleport.
 

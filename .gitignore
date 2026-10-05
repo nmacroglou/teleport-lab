@@ -20,3 +20,6 @@ __pycache__/
 # (the plain "data/" rule above would otherwise hide them).
 !splunk/apps/teleport_lab/default/data/
 scripts/*.bak-*
+
+# Runtime state for demo scripts (pid, logs)
+.run/
