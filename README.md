@@ -42,7 +42,7 @@ How the pieces connect on the Mac: people (blue), the machine identity for Claud
 
 ![The wiring: people, machine identity and audit trail across the Mac, Docker Desktop and Splunk](docs/images/wiring-map.png)
 
-Only the Teleport proxy and auth ports and Splunk Web are published, and only on 127.0.0.1. The SSH node, the web app and PostgreSQL can only be reached through Teleport.
+Only the Teleport proxy and auth ports and Splunk Web are published, on 127.0.0.1. The one exception is Teleport's web port 3080, which is also published on the Mac's home-network address so an iPad can log in (see Phase 2 in docs/ARCHITECTURE.md). The SSH node, the web app and PostgreSQL can only be reached through Teleport.
 
 More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -66,7 +66,7 @@ open https://localhost:3080       # Teleport web UI (local only)
 open http://127.0.0.1:8000        # Splunk Web (local only)
 ```
 
-Nothing is published to the network: every port is bound to `127.0.0.1`, and the Linux server, web app and database publish no ports at all.
+Only Teleport's web port (3080) is published to the home network (LAN only, no router forwarding); every other port is bound to `127.0.0.1`, and the Linux server, web app and database publish no ports at all.
 
 ## The Splunk story (demo)
 

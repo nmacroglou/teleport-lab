@@ -2,7 +2,7 @@
 
 ## Today: the Mac lab
 
-Everything runs in Docker Desktop on one Mac. Only Teleport and Splunk publish ports, and only on `127.0.0.1`.
+Everything runs in Docker Desktop on one Mac. Only Teleport and Splunk publish ports, on `127.0.0.1`; Teleport's web port 3080 is also published on the Mac's LAN address for the iPad (Phase 2, below).
 
 ```mermaid
 flowchart TB
@@ -93,3 +93,17 @@ The Mac lab stays as the rollback copy until the Ubuntu lab is fully working.
 | Separate bot identity | AI activity is attributable and revocable on its own |
 | Deterministic RBAC | The agent is non-deterministic; the policy is not |
 | Audit events to Splunk | Every allow and deny can be searched, alerted on and explained |
+
+## Phase 2: iPad on the home network
+
+```
+iPad --Wi-Fi--> https://192.168.0.81:3080 --> Teleport proxy (Mac, Docker)
+                                                  |--> Linux, PostgreSQL, apps (reachable only through Teleport)
+                                                  `--> audit events --> Splunk
+```
+
+- One extra port mapping in `docker-compose.yml`: `192.168.0.81:3080:3080` (beside `127.0.0.1:3080:3080`). Nothing else is published to the LAN.
+- The proxy certificate (mkcert) now also lists `192.168.0.81`. The iPad trusts the mkcert CA (installed as a profile, then enabled under Certificate Trust Settings).
+- Teleport's `public_addr` is still `localhost:3080`, so tbot, the node and the scripts are unchanged.
+- The Mac's address comes from the router. Reserve it (DHCP reservation) or reissue the certificate and the port mapping if it changes.
+- Rollback: restore `docker-compose.yml.backup`, then `docker compose up -d`. The old certificate pair is kept as `teleport.crt.bak` / `teleport.key.bak` in `secrets/tls/` (not in Git).

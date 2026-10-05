@@ -13,9 +13,8 @@ services:
       - ./secrets/tls:/etc/teleport-tls:ro
       - ./data:/var/lib/teleport
     ports:
-      # Bound to 127.0.0.1 (this Mac only), except 3080, also on the LAN IP below for the iPad.
-      - "127.0.0.1:3080:3080" # Web UI and API (proxy), this Mac
-      - "192.168.0.81:3080:3080" # Same port, LAN address only (iPad)
+      # Bound to 127.0.0.1 so the lab is only reachable from this Mac.
+      - "127.0.0.1:3080:3080" # Web UI and API (proxy)
       - "127.0.0.1:3025:3025" # Auth service
       - "127.0.0.1:3023:3023" # SSH proxy
       - "127.0.0.1:3024:3024" # Reverse tunnel

@@ -10,7 +10,7 @@ Local secrets live outside the repository or in git-ignored folders (`secrets/`,
 
 ## Never expose directly to the public internet
 
-SSH on protected machines, PostgreSQL (5432), the Docker socket, the Kubernetes API, and the local Teleport port 3080. All published ports here are bound to `127.0.0.1`.
+SSH on protected machines, PostgreSQL (5432), the Docker socket, the Kubernetes API, and the Teleport port 3080. All published ports are bound to `127.0.0.1`, with one exception: the Teleport web/proxy port 3080 is also published on the Mac's home-network address (`192.168.0.81`) so an iPad on the same Wi-Fi can reach it. Never create router port forwarding, a DMZ or UPnP rules for it. The auth (3025), SSH proxy (3023), tunnel (3024) and Splunk (8000) ports stay on `127.0.0.1` only. Checked from the iPad on 2026-10-04: 8000, 5432 and 3025 do not answer.
 
 ## Claude Code safety
 

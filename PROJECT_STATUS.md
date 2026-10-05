@@ -12,6 +12,15 @@
 - [x] Claude Code reaches the lab database through an MCP server behind Teleport
 - [x] Teleport audit events in Splunk (index `teleport`)
 
+## Done: Phase 2, iPad on the home network
+
+- [x] Teleport web port also published on the Mac's LAN IP (192.168.0.81), LAN only, no router forwarding
+- [x] Certificate reissued with the LAN IP; mkcert CA trusted on the iPad
+- [x] iPad login to Teleport works; failed logins visible in Splunk
+- [x] Checked from the iPad: Splunk (8000), PostgreSQL (5432) and Teleport auth (3025) are not reachable
+- [ ] Reserve 192.168.0.81 for the Mac in the router (DHCP reservation)
+- [ ] Confirm tbot and the Claude workflow after the Teleport restart
+
 ## Done: Splunk story
 
 - [x] Synthetic demo data in a separate index (4,223 events over 15 days)
