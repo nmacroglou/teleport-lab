@@ -71,8 +71,9 @@ menu(){
                    4) Failed logins + denied bot
                    5) iPad: set up user   l) Lock (kill switch)   k) Unlock
   All triggers     a) Run every automatic trigger once (scene 4)
-                   t) START live traffic   x) STOP live traffic   w) Traffic status
-  Demo data        b) Backfill missing days (synthetic data, nothing deleted)
+                   t) START live traffic (realistic)   f) FAST traffic (on stage)
+                   x) STOP live traffic    w) Traffic status
+  Demo data        b) Backfill missing days + trigger events (synthetic, nothing deleted)
   After            r) Reset the demo (demo users, locks, invites; stops traffic)
                    q) Quit
 MENU
@@ -93,7 +94,8 @@ while true; do
     5) bash "$SCENE" 5 setup ipad.demo && open -e secrets/ipad-invite.txt 2>/dev/null ;;
     l) bash "$SCENE" 5 lock ipad.demo ;;
     k) bash "$SCENE" 5 unlock ipad.demo ;;
-    t) printf 'Seconds between rounds [30]: '; read -r n; bash scripts/demo-traffic.sh start "${n:-30}" ;;
+    t) bash scripts/demo-traffic.sh start ;;
+    f) printf 'Seconds between rounds [30]: '; read -r n; bash scripts/demo-traffic.sh stop >/dev/null; bash scripts/demo-traffic.sh start fast "${n:-30}" ;;
     x) bash scripts/demo-traffic.sh stop ;;
     w) bash scripts/demo-traffic.sh status ;;
     b) bash scripts/demo-backfill.sh run ;;
