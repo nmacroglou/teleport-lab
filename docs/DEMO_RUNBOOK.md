@@ -19,7 +19,8 @@ Data: dashboards default to **Demo data** (synthetic, clearly labeled). Switch *
 | 7-11 | **2 Auditor Evidence** | "An auditor asks: who touched the database?" | Heatmap -> "Who accessed" table -> query log. Click into one row, show the event `uid`. Filter Identity to one person. Mention Export. |
 | 11-16 | **3 AI Agent Governance** | "Claude decides. Teleport decides. Splunk records." | Run `scripts/demo-scene.sh 3` for the prompts. Type A and B (allowed), then C and D (writes). Switch to Live data: click the agent's session -> Session replay. Show the red "Blocked at Teleport" rows in Demo data. The AI Agent page is now a 4-step story: (1) the narrow job and 1-hour credential, (2) click the worst day ("Went off-script, stopped every time"), (3) walk the step-by-step table (3 admin-user attempts refused by Teleport, 3 writes refused by the database, 2 SSH attempts refused), (4) click a step to show the raw audit event. |
 | 16-20 | **4 Security Watch** | "Something looks wrong: where do I look?" | Live: `scripts/demo-scene.sh 4`. Show failed logins, brute-force burst, bot denial. In Demo data show off-hours access and the unusual source IP. |
-| 20+ | Whiteboard / Q&A | Architecture | See cheat sheet below. |
+| 20-25 | **5 Remote engineer (iPad)** | "This iPad is a laptop in a hotel. No VPN, no SSH key, no database password." | Before: `scripts/demo-scene.sh 5 setup` (sends nothing to screen; invite in `secrets/ipad-invite.txt`). On the iPad: log in with password + OTP, open a browser terminal to `linux-server-1`, show Splunk/5432 do not load. Then on the Mac: `scripts/demo-scene.sh 5 lock` and watch the iPad session drop. See "Scene 5" below. |
+| 25+ | Whiteboard / Q&A | Architecture | See cheat sheet below. |
 
 ## Honest details to say out loud (this builds trust)
 - Demo data is synthetic and tagged `demo=true`, in a separate index (`teleport_demo`).
@@ -84,3 +85,25 @@ The Dashboard Studio pages tell one story. Classic Simple XML pages stay availab
 
 Build: `python3 scripts/build_dashboards.py`, then `dash_studio_identity.py`, `dash_studio_scorecard.py`, `dash_studio_scenes.py`. Reload Splunk views (`_reload` URL, then Refresh on /debug/refresh) so the menu updates.
 Studio pages are a fixed 1920 px canvas that auto-scales: check them on the projector before the demo.
+
+## Scene 5: remote engineer on an unmanaged device (the iPad)
+
+The iPad stands in for a remote site: it reaches the Mac over the home network at `https://192.168.0.81:3080`, and only Teleport's web port is published there.
+
+**Before the demo**
+- `scripts/demo-scene.sh 5 setup` creates `ipad.demo` (role `access`, SSH login `labuser`) and saves the invite with `localhost` already replaced by the Mac's LAN IP. Send it to the iPad privately; never show it on the projector.
+- On the iPad, Safari aA menu -> **Request Mobile Website**, so Splunk logs the device as an iPad (by default iPad Safari reports itself as a Mac).
+- The mkcert CA must be trusted on the iPad (profile installed, then enabled under Certificate Trust Settings).
+
+**Live**
+1. Log in on the iPad (username in lowercase; the iPad keyboard capitalizes it), password + authenticator code.
+2. Resources -> `linux-server-1` -> Connect as `labuser`: `hostname`, `whoami`. Every keystroke is recorded; replay it on the Mac under Session Recordings.
+3. On the iPad, try `http://192.168.0.81:8000` (Splunk) and port 5432: nothing loads. Only Teleport is reachable.
+4. Kill switch on the Mac: `scripts/demo-scene.sh 5 lock`. Teleport cuts the open session within about 2 seconds and refuses new logins (`client.disconnect`: "lock targeting User ... is in force").
+5. Splunk: `index=teleport (user_agent="*iPad*" OR event=lock.created OR event=client.disconnect)`.
+6. Afterwards: `scripts/demo-scene.sh 5 unlock`. Removing the test user is manual on purpose.
+
+**Honest details**
+- Splunk shows the source address as Docker Desktop's gateway (`192.168.65.1`), not the iPad's IP; on a Linux server the real client IP appears.
+- The `whoami` app does not work from the iPad: it is addressed as `whoami.localhost`.
+- Tested 2026-10-05 with a throwaway user: SSH as `labuser` worked; a lock cut the open session in 2 s and refused new connections.
